@@ -1,4 +1,5 @@
 ---
+article_id: '7e77279a72a8402b18d4165646b34eab'
 title: 'これで快適！仕事も日常も支えるWindowsツールリスト'
 emoji: 🛠
 series: null

@@ -32,14 +32,18 @@ Qiita Repo: https://github.com/SolitudeRA/qiita-repo
 ```
 .
 ├── articles/        # 記事が格納されるディレクトリ
+│   ├── manifest.json # 記事ID、ソース、配信先の正規レジストリ
 │   ├── qiita/       # Qiita専用の記事
 │   ├── share/       # ZennとQiitaの両方で共有される記事
 │   └── zenn/        # Zenn専用の記事
 ├── scripts/         # 自動化スクリプト
-│   └── update_metadata.js # メタデータの更新スクリプト
+│   ├── update_metadata.js  # メタデータの更新スクリプト
+│   └── validate_articles.js # 公開前の安全性チェック
 ├── .github/         # GitHub Actions設定
 │   └── workflows/
 │       └── distribute.yml # 公開処理を自動化するワークフロー
+├── package.json     # Node.js依存関係と検証コマンド
+├── package-lock.json # 固定された依存関係
 ├── LICENSE          # ライセンスファイル
 └── README.md        # このファイル
 ```
@@ -61,7 +65,7 @@ cd Blog-Project
 Node.jsがインストールされていることを確認し、以下のコマンドを実行してください。
 
 ```bash
-npm install
+npm ci
 ```
 
 ### 3. **GitHub Actionsを利用するためのSecretsの設定**
@@ -99,14 +103,46 @@ GitHub Actionsを使用してリポジトリを自動更新するには、**Pers
 
 ```markdown
 ---
-title: "ホームサーバー完全構築ガイド #1 OS導入とインフラ設定"
+article_id: "08828ec8b0719d4ae2ae640a6dd4867d"
+title: "ホームサーバー完全構築ガイド #1 OS導入と基本設定"
 series: "ホームサーバー完全構築ガイド"
-topics:
+tags:
   - "linux"
   - "selfhosting"
 ---
 記事本文をここに書きます。
 ```
+
+`article_id` は32桁の小文字16進数で、タイトルやファイル名を変更しても変えてはいけません。同じIDを別の記事へ再利用しないでください。
+
+現在の自動配信スライスが安全に扱えるのは、manifestと両子リポジトリにすでに対応付けられた11記事の更新・改名だけです。新しい記事IDの自動onboardingは、Qiita側の安全な新規作成・再実行プロトコルが未実装のため、previous manifestとの履歴検証で停止します。第12記事を追加する場合は、両子リポジトリへの対応付けを含むonboarding手順を別途実装・確認してから開放してください。
+
+すべての記事は `articles/manifest.json` にも登録します。Front Matterの `article_id` とmanifestの `article_id` は必ず一致させます。
+
+```json
+{
+  "article_id": "08828ec8b0719d4ae2ae640a6dd4867d",
+  "source": "articles/share/ホームサーバー完全構築ガイド #1 OS導入と基本設定.md",
+  "article_state": "active",
+  "targets": {
+    "qiita": { "desired": "published" },
+    "zenn": { "desired": "published" }
+  }
+}
+```
+
+`article_state` の予約値は `active`、`retiring`、`retired`、配信先の `desired` は `published`、`withdrawn` です。現在の自動配信は安全な撤回処理をまだ実装していないため、`active` と `published` 以外を検出すると停止します。記事を削除する場合もmanifestのエントリーを先に消さないでください。
+
+ファイル名を変更する場合はmanifestの `source` も同じコミットで更新し、`article_id` は維持します。公開ワークフローはpush前のmanifestと比較し、既存IDの消失、既存sourceの別IDへの付け替え、配信先の暗黙削除を拒否します。初回導入として扱われるのは、基準コミットから到達可能なGit履歴にmanifestが一度も存在しない場合だけです。manifestを削除したコミットの後で再作成しても、直近の歴史上のmanifestまで遡って比較されるため履歴はリセットされません。
+
+記事内リンクはタイトルではなく変更されないIDを参照します。
+
+```markdown
+<<<article:339243802597e8c42bcddfb10b5e94e3>>>
+```
+
+旧形式の `<<<記事タイトル>>>` は公開前検証で拒否されます。
+
 ## 使用方法
 
 ### 記事を分散する手順
@@ -128,14 +164,20 @@ topics:
 3. **GitHub Actionsによる自動処理**  
    プッシュがトリガーされると、GitHub Actions が以下の処理を自動で行います：
 
-   1. **`local_updated_at` の自動更新**  
-      - 各記事ファイルの最終更新日時（`local_updated_at`）が検出され、自動的に更新されます。
+   1. **記事ソースの安全性チェック**
+      - 空ファイル、NUL、壊れたUTF-8、Front Matter不備、重複タイトル、ファイル名衝突、シリーズ欠番、現在・過去manifestとの不整合、重複ID、解決できない `<<<article:article_id>>>` 参照をQiita/Zennの両方について検出します。
+      - エラーがある場合は、子リポジトリのチェックアウトやプッシュを行う前に停止します。
 
-   2. **Qiitaリポジトリへの分散**  
-      - `articles/share` と `articles/qiita` 内の記事が Qiita の子リポジトリ（例: `qiita-repo/pre-publish`）にコピーされ、コミット・プッシュされます。
+   2. **`local_updated_at` の自動更新**
+      - 各記事ファイルを最後に変更したGit commitのcommitter timestamp（strict ISO 8601）を `local_updated_at` に使用します。checkout時のファイルmtimeは使用しないため、無関係なpushや新しいrunnerで記事日時が変わることはありません。
+      - 全記事のGit履歴とFront Matterを先に検証し、履歴なし・Gitエラー・解析エラーが1件でもあれば、どの記事も書き換えずに停止します。
+      - 更新後に配布用メタデータを再検証します。
 
-   3. **Zennリポジトリへの分散**  
-      - `articles/share` と `articles/zenn` 内の記事が Zenn の子リポジトリ（例: `zenn-repo/pre-publish`）にコピーされ、コミット・プッシュされます。
+   3. **Qiitaリポジトリへの分散**
+      - `articles/share` と `articles/qiita` 内の記事、およびmanifestが Qiita の子リポジトリ（例: `qiita-repo/pre-publish`）にコピーされ、コミット・プッシュされます。
+
+   4. **Zennリポジトリへの分散**
+      - `articles/share` と `articles/zenn` 内の記事、およびmanifestが Zenn の子リポジトリ（例: `zenn-repo/pre-publish`）にコピーされ、コミット・プッシュされます。
 
 ---
 
@@ -192,16 +234,28 @@ with:
 
 ### スクリプト一覧
 
+- **`validate_articles.js`**
+  配布対象の記事をプラットフォーム別に検証し、破損ファイル、manifestとFront MatterのID不整合、曖昧なタイトル・シリーズ構造、解決不能なID参照を公開前に拒否します。
+
 - **`update_metadata.js`**  
-  `articles`ディレクトリ内のMarkdownファイルをスキャンし、ファイルの最終更新日時（`local_updated_at`）をメタデータに反映します。
+  `articles`ディレクトリ内のMarkdownファイルをスキャンし、各ファイルを最後に変更したGit commitのcommitter timestampを `local_updated_at` に反映します。ファイルシステムのmtimeには依存しません。
 
 ### デバッグ
 
 以下のコマンドでローカル環境でスクリプトを実行できます：
 
 ```bash
+# 記事ソースを検証
+npm run validate:articles
+
+# 自動テストを実行
+npm test
+
 # メタデータを更新
 node scripts/update_metadata.js <directory>
+
+# 更新後の配布用メタデータを検証
+npm run validate:articles:distribution
 ```
 
 `<directory>` には更新対象のディレクトリ（例: `articles/zenn` や `articles/qiita`）を指定してください。

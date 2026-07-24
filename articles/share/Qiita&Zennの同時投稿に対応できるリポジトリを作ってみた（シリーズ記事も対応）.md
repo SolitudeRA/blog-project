@@ -1,4 +1,5 @@
 ---
+article_id: '486d1bcca039ee9a86c874e92e62b8e2'
 title: 'Qiita&Zennの同時投稿に対応できるリポジトリを作ってみた（シリーズ記事も対応）'
 series: null
 emoji: ✒
