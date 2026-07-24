@@ -7,6 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "distribute:target": "node scripts/distribute_target.ts",
     "validate:articles": "node scripts/validate_articles.ts articles",
     "validate:articles:distribution": "node scripts/validate_articles.ts articles --phase=distribution",
     "test": "node --test",

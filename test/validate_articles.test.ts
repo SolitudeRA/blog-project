@@ -911,7 +911,7 @@ test('manifest resolver recovers the latest reachable manifest after a deletion 
     }
 });
 
-test('distribution workflow resolves reachable history before child writes', () => {
+test('distribution workflow validates before PR-based child synchronization', () => {
     const workflow = fs.readFileSync(
         path.join(
             __dirname,
@@ -926,20 +926,90 @@ test('distribution workflow resolves reachable history before child writes', () 
     const validationIndex = workflow.indexOf(
         'Validate Qiita and Zenn source sets before writes',
     );
-    const checkoutIndex = workflow.indexOf('Checkout from Qiita repository');
+    const uploadIndex = workflow.indexOf(
+        'Upload prepared distribution snapshot',
+    );
+    const restoreEmptyDirectoriesIndex = workflow.indexOf(
+        'Restore required empty snapshot directories',
+    );
+    const prepareIndex = workflow.indexOf('  prepare_targets:');
+    const publishJobIndex = workflow.indexOf('  publish_targets:');
+    const publishIndex = workflow.indexOf(
+        'Publish checked automation pull request',
+    );
 
     assert.ok(resolveIndex >= 0);
     assert.ok(resolveIndex < validationIndex);
-    assert.ok(validationIndex < checkoutIndex);
+    assert.ok(validationIndex < uploadIndex);
+    assert.ok(uploadIndex < prepareIndex);
+    assert.ok(prepareIndex < restoreEmptyDirectoriesIndex);
+    assert.ok(restoreEmptyDirectoriesIndex < publishJobIndex);
+    assert.ok(prepareIndex < publishJobIndex);
+    assert.ok(publishJobIndex < publishIndex);
     assert.match(workflow, /PREVIOUS_MANIFEST_PATH/);
     assert.match(workflow, /pull_request:/);
+    assert.match(workflow, /workflow_dispatch:/);
     assert.match(
         workflow,
-        /github\.event\.pull_request\.base\.sha \|\| github\.event\.before/,
+        /github\.event\.pull_request\.base\.sha \|\| github\.event_name == 'push' && github\.event\.before \|\| format\('\{0\}\^', github\.sha\)/,
     );
     assert.doesNotMatch(workflow, /github\.event\.pull_request\.head\.sha/);
+    assert.doesNotMatch(workflow, /pull_request_target:/);
+    assert.match(workflow, /^permissions:\r?\n\s+contents: read$/m);
+    assert.match(workflow, /^  distribute:\r?$/m);
+    assert.match(workflow, /^  prepare_targets:\r?$/m);
+    assert.match(workflow, /^  publish_targets:\r?$/m);
+    assert.match(workflow, /^\s+needs: distribute$/m);
+    assert.match(workflow, /^\s+fail-fast: false$/m);
+    assert.match(workflow, /target: qiita[\s\S]*repository: SolitudeRA\/qiita-repo/);
+    assert.match(workflow, /target: zenn[\s\S]*repository: SolitudeRA\/zenn-repo/);
+    assert.match(
+        workflow,
+        /github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch'\)/,
+    );
+    assert.match(
+        workflow,
+        /!cancelled\(\)[\s\S]*needs\.distribute\.result == 'success'/,
+    );
+    assert.doesNotMatch(workflow, /always\(\)/);
+    assert.match(workflow, /npm run distribute:target -- prepare/);
+    assert.match(workflow, /mkdir -p prepared-articles\/share/);
+    assert.match(workflow, /npm run distribute:target -- export/);
+    assert.match(workflow, /npm run distribute:target -- apply/);
+    assert.match(workflow, /npm run distribute:target -- publish/);
+    assert.match(workflow, /npm run build:articles -- --base-ref=HEAD/);
     assert.equal(
-        (workflow.match(/if: github\.event_name == 'push'/g) || []).length,
-        5,
+        (
+            workflow.match(
+                /name: prepared-articles-\$\{\{ github\.run_id \}\}/g,
+            ) || []
+        ).length,
+        2,
+    );
+    assert.match(workflow, /^\s+overwrite: true$/m);
+    assert.doesNotMatch(workflow, /prepared-articles-.*run_attempt/);
+    assert.equal(
+        (
+            workflow.match(
+                /prepared-target-\$\{\{ matrix\.target \}\}-\$\{\{ github\.run_id \}\}/g,
+            ) || []
+        ).length,
+        2,
+    );
+    const prepareBlock = workflow.slice(prepareIndex, publishJobIndex);
+    const publishBlock = workflow.slice(publishJobIndex);
+    assert.match(prepareBlock, /npm ci/);
+    assert.match(prepareBlock, /npx --no-install zenn list:articles/);
+    assert.doesNotMatch(prepareBlock, /secrets\.BLOG_PROJECT_TOKEN/);
+    assert.doesNotMatch(publishBlock, /npm ci/);
+    assert.doesNotMatch(publishBlock, /npx --no-install zenn/);
+    assert.ok(
+        publishBlock.indexOf('Apply prepared target patch')
+        < publishBlock.indexOf('secrets.BLOG_PROJECT_TOKEN'),
+    );
+    assert.doesNotMatch(workflow, /\bgit push\b/);
+    assert.equal(
+        (workflow.match(/secrets\.BLOG_PROJECT_TOKEN/g) || []).length,
+        1,
     );
 });

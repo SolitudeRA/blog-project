@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 concurrency:
   group: blog-project-${{ github.event.pull_request.number || github.ref }}
@@ -22,6 +23,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -42,7 +44,7 @@ jobs:
         id: previous_manifest
         shell: bash
         env:
-          BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || format('{0}^', github.sha) }}
         run: |
           node scripts/resolve_manifest_history.ts \
             --baseline-ref "$BASELINE_REF" \
@@ -68,72 +70,159 @@ jobs:
       - name: Validate distributable metadata
         run: npm run validate:articles:distribution
 
-      - name: Checkout from Qiita repository
-        if: github.event_name == 'push'
+      - name: Upload prepared distribution snapshot
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@v7
+        with:
+          name: prepared-articles-${{ github.run_id }}
+          path: |
+            articles/manifest.json
+            articles/share
+            articles/qiita
+            articles/zenn
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: true
+          retention-days: 1
+
+  prepare_targets:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: distribute
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: qiita
+            repository: SolitudeRA/qiita-repo
+          - target: zenn
+            repository: SolitudeRA/zenn-repo
+
+    steps:
+      - name: Checkout Blog-Project automation
         uses: actions/checkout@v7
         with:
-          repository: solitudeRA/qiita-repo
-          ref: main
-          token: ${{ secrets.BLOG_PROJECT_TOKEN }}
-          path: qiita-repo
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Checkout from Zenn repository
-        if: github.event_name == 'push'
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: ".node-version"
+          package-manager-cache: false
+
+      - name: Download prepared distribution snapshot
+        uses: actions/download-artifact@v8
+        with:
+          name: prepared-articles-${{ github.run_id }}
+          path: prepared-articles
+
+      - name: Restore required empty snapshot directories
+        run: mkdir -p prepared-articles/share
+
+      - name: Checkout target main
         uses: actions/checkout@v7
         with:
-          repository: SolitudeRA/zenn-repo
+          repository: ${{ matrix.repository }}
           ref: main
-          token: ${{ secrets.BLOG_PROJECT_TOKEN }}
-          path: zenn-repo
+          fetch-depth: 0
+          persist-credentials: false
+          path: target-repository
 
-      - name: Prepare both validated target repositories
-        if: github.event_name == 'push'
+      - name: Prepare target automation branch
         run: |
-          mkdir -p qiita-repo/pre-publish
-          mkdir -p zenn-repo/pre-publish
-          rm -rf qiita-repo/pre-publish/*
-          rm -rf zenn-repo/pre-publish/*
+          npm run distribute:target -- prepare \
+            --target "${{ matrix.target }}" \
+            --source-root prepared-articles \
+            --repository-root target-repository
 
-          cp -r articles/share/* qiita-repo/pre-publish/
-          cp articles/manifest.json qiita-repo/pre-publish/manifest.json
-          if [ -d articles/qiita ] && [ "$(ls -A articles/qiita)" ]; then
-            cp -r articles/qiita/* qiita-repo/pre-publish/
-          else
-            echo "Directory articles/qiita does not exist or is empty. Skipping copy step."
-          fi
-
-          cp -r articles/share/* zenn-repo/pre-publish/
-          cp articles/manifest.json zenn-repo/pre-publish/manifest.json
-          if [ -d articles/zenn ] && [ "$(ls -A articles/zenn)" ]; then
-            cp -r articles/zenn/* zenn-repo/pre-publish/
-          else
-            echo "Directory articles/zenn does not exist or is empty. Skipping copy step."
-          fi
-
-      - name: Push to Qiita repository
-        if: github.event_name == 'push'
-        working-directory: qiita-repo/pre-publish
+      - name: Generate Zenn outputs inside the proposed change
+        if: matrix.target == 'zenn'
+        working-directory: target-repository
         run: |
-          git config --local user.name "SolitudeRA"
-          git config --local user.email "solitude@protogalaxy.me"
-          git add -- .
-          if git diff --cached --quiet; then
-            echo "No Qiita pre-publish changes detected. Skipping commit."
-          else
-            git commit -m "Update pre-publish articles for Qiita from main-repo"
-            git push
-          fi
+          npm ci
+          npm run build:articles -- --base-ref=HEAD
+          npm run check:articles -- --base-ref=HEAD
+          npx --no-install zenn list:articles
 
-      - name: Push to Zenn repository
-        if: github.event_name == 'push'
-        working-directory: zenn-repo/pre-publish
+      - name: Export prepared target patch
         run: |
-          git config --local user.name "SolitudeRA"
-          git config --local user.email "solitude@protogalaxy.me"
-          git add -- .
-          if git diff --cached --quiet; then
-            echo "No Zenn pre-publish changes detected. Skipping commit."
-          else
-            git commit -m "Update pre-publish articles for Zenn from main-repo"
-            git push
-          fi
+          npm run distribute:target -- export \
+            --target "${{ matrix.target }}" \
+            --repository-root target-repository \
+            --output "$RUNNER_TEMP/prepared-target.json"
+
+      - name: Upload prepared target patch
+        uses: actions/upload-artifact@v7
+        with:
+          name: prepared-target-${{ matrix.target }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/prepared-target.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  publish_targets:
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.distribute.result == 'success' }}
+    needs:
+      - distribute
+      - prepare_targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: qiita
+            repository: SolitudeRA/qiita-repo
+          - target: zenn
+            repository: SolitudeRA/zenn-repo
+
+    steps:
+      - name: Checkout Blog-Project automation
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: ".node-version"
+          package-manager-cache: false
+
+      - name: Download prepared target patch
+        uses: actions/download-artifact@v8
+        with:
+          name: prepared-target-${{ matrix.target }}-${{ github.run_id }}
+          path: prepared-target
+
+      - name: Checkout fresh target main
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ matrix.repository }}
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+          path: target-repository
+
+      - name: Apply prepared target patch
+        run: |
+          npm run distribute:target -- apply \
+            --target "${{ matrix.target }}" \
+            --repository-root target-repository \
+            --patch-file prepared-target/prepared-target.json
+
+      - name: Resolve deterministic source timestamp
+        id: source
+        shell: bash
+        run: echo "timestamp=$(git show -s --format=%cI "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Publish checked automation pull request
+        env:
+          DISTRIBUTION_SOURCE_TIMESTAMP: ${{ steps.source.outputs.timestamp }}
+          GH_TOKEN: ${{ secrets.BLOG_PROJECT_TOKEN }}
+        run: |
+          npm run distribute:target -- publish \
+            --target "${{ matrix.target }}" \
+            --repository-root target-repository
