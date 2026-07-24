@@ -4,7 +4,7 @@
   "private": true,
   "type": "commonjs",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "validate:articles": "node scripts/validate_articles.js articles",
@@ -12,7 +12,7 @@
     "test": "node --test --experimental-test-isolation=none"
   },
   "dependencies": {
-    "fs-extra": "11.2.0",
+    "fs-extra": "11.4.0",
     "gray-matter": "4.0.3"
   }
 }
