@@ -18,12 +18,14 @@ const os: typeof import('node:os') = require('node:os');
 const path: typeof import('node:path') = require('node:path');
 const test: typeof import('node:test') = require('node:test');
 
+const validatorApi =
+    require('../scripts/validate_articles.ts') as ValidateArticlesExports;
 const {
     parseCliArgs,
     runCli,
     validateArticleFiles,
     validateArticlesDirectory,
-} = require('../scripts/validate_articles.ts') as ValidateArticlesExports;
+} = validatorApi;
 const {
     defaultGitRunner,
     loadPreviousManifestFromGit,
@@ -59,6 +61,51 @@ interface TestManifest {
     schema_version: number;
     articles: ManifestEntry[];
 }
+
+test('validate_articles keeps its CommonJS compatibility surface', () => {
+    assert.deepEqual(Object.keys(validatorApi).sort(), [
+        'ARTICLE_ID_PATTERN',
+        'SERIES_END',
+        'SERIES_START',
+        'collectMarkdownFiles',
+        'extractArticleReferences',
+        'formatResult',
+        'isTimestampWithTimezone',
+        'parseArticle',
+        'parseCliArgs',
+        'readManifestFile',
+        'readPreviousManifestFile',
+        'runCli',
+        'validateArticleFiles',
+        'validateArticlesDirectory',
+        'validateManifest',
+        'validateManifestHistory',
+        'validateSeriesMarkers',
+    ]);
+
+    assert.equal(validatorApi.SERIES_START, '<!-- START_SERIES -->');
+    assert.equal(validatorApi.SERIES_END, '<!-- END_SERIES -->');
+    assert.equal(validatorApi.ARTICLE_ID_PATTERN.test('a'.repeat(32)), true);
+    assert.deepEqual(
+        validatorApi.extractArticleReferences(
+            `<<<article:${'a'.repeat(32)}>>>`,
+        ),
+        [{ articleId: 'a'.repeat(32), index: 0 }],
+    );
+    assert.equal(
+        validatorApi.isTimestampWithTimezone(
+            '2026-07-24T12:00:00+09:00',
+        ),
+        true,
+    );
+    assert.deepEqual(
+        validatorApi.validateSeriesMarkers(
+            '<!-- START_SERIES -->\n<!-- END_SERIES -->',
+            'share/a.md',
+        ),
+        [],
+    );
+});
 
 function markdown({
     articleId,
@@ -379,6 +426,14 @@ test('CLI parses phase options and returns zero for a valid directory', () => {
         );
         assert.equal(runCli([temporaryRoot], io), 0);
         assert.match(output.join('\n'), /validation passed/);
+        assert.equal(
+            runCli([path.join(temporaryRoot, 'missing')], io),
+            1,
+        );
+        assert.equal(
+            runCli([temporaryRoot, '--phase=unsupported'], io),
+            2,
+        );
     } finally {
         fs.rmSync(temporaryRoot, { recursive: true, force: true });
     }
