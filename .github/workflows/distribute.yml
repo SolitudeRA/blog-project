@@ -17,14 +17,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22.11.0'
+          package-manager-cache: false
 
       - name: Install dependencies
         run: npm ci
@@ -63,7 +64,7 @@ jobs:
         run: npm run validate:articles:distribution
 
       - name: Checkout from Qiita repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: solitudeRA/qiita-repo
           ref: main
@@ -71,7 +72,7 @@ jobs:
           path: qiita-repo
 
       - name: Checkout from Zenn repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: SolitudeRA/zenn-repo
           ref: main
