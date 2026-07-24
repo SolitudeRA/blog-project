@@ -1,13 +1,14 @@
 name: Distribute Articles
 
 on:
+  pull_request:
   push:
     branches:
       - main
 
 concurrency:
-  group: blog-project-distribution
-  cancel-in-progress: false
+  group: blog-project-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -15,6 +16,7 @@ permissions:
 jobs:
   distribute:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout main repository
         uses: actions/checkout@v7
@@ -24,7 +26,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '24.18.0'
+          node-version-file: '.node-version'
           package-manager-cache: false
 
       - name: Install dependencies
@@ -40,10 +42,10 @@ jobs:
         id: previous_manifest
         shell: bash
         env:
-          BEFORE_SHA: ${{ github.event.before }}
+          BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           node scripts/resolve_manifest_history.ts \
-            --baseline-ref "$BEFORE_SHA" \
+            --baseline-ref "$BASELINE_REF" \
             --output "$RUNNER_TEMP/previous-articles-manifest.json" \
             --github-output "$GITHUB_OUTPUT"
 
@@ -67,6 +69,7 @@ jobs:
         run: npm run validate:articles:distribution
 
       - name: Checkout from Qiita repository
+        if: github.event_name == 'push'
         uses: actions/checkout@v7
         with:
           repository: solitudeRA/qiita-repo
@@ -75,6 +78,7 @@ jobs:
           path: qiita-repo
 
       - name: Checkout from Zenn repository
+        if: github.event_name == 'push'
         uses: actions/checkout@v7
         with:
           repository: SolitudeRA/zenn-repo
@@ -83,6 +87,7 @@ jobs:
           path: zenn-repo
 
       - name: Prepare both validated target repositories
+        if: github.event_name == 'push'
         run: |
           mkdir -p qiita-repo/pre-publish
           mkdir -p zenn-repo/pre-publish
@@ -106,6 +111,7 @@ jobs:
           fi
 
       - name: Push to Qiita repository
+        if: github.event_name == 'push'
         working-directory: qiita-repo/pre-publish
         run: |
           git config --local user.name "SolitudeRA"
@@ -119,6 +125,7 @@ jobs:
           fi
 
       - name: Push to Zenn repository
+        if: github.event_name == 'push'
         working-directory: zenn-repo/pre-publish
         run: |
           git config --local user.name "SolitudeRA"
