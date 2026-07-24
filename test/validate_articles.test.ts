@@ -932,4 +932,14 @@ test('distribution workflow resolves reachable history before child writes', () 
     assert.ok(resolveIndex < validationIndex);
     assert.ok(validationIndex < checkoutIndex);
     assert.match(workflow, /PREVIOUS_MANIFEST_PATH/);
+    assert.match(workflow, /pull_request:/);
+    assert.match(
+        workflow,
+        /github\.event\.pull_request\.base\.sha \|\| github\.event\.before/,
+    );
+    assert.doesNotMatch(workflow, /github\.event\.pull_request\.head\.sha/);
+    assert.equal(
+        (workflow.match(/if: github\.event_name == 'push'/g) || []).length,
+        5,
+    );
 });
