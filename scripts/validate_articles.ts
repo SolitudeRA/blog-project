@@ -1,93 +1,76 @@
 'use strict';
 
-export type SourceKind = 'share' | 'qiita' | 'zenn';
-export type Platform = 'qiita' | 'zenn';
-export type ValidationPhase = 'source' | 'distribution';
-export type UnknownRecord = Record<string, unknown>;
+import type {
+    ArticleInput,
+    Diagnostic,
+    ParsedArticle,
+    ParseArticleResult,
+    Platform,
+    SourceKind,
+    UnknownRecord,
+    ValidateArticleFilesOptions,
+    ValidateArticlesDirectoryOptions,
+    ValidationIo,
+    ValidationPhase,
+    ValidationResult,
+} from './article_validation/types.ts';
+import type {
+    ArticleValidationConstantsExports,
+} from './article_validation/constants.ts';
+import type {
+    ArticleValidationDiagnosticsExports,
+} from './article_validation/diagnostics.ts';
+import type {
+    ArticleValidationSyntaxExports,
+} from './article_validation/article_syntax.ts';
 
-export interface Diagnostic {
-    code: string;
-    file: string;
-    message: string;
-}
-
-export interface ArticleReference {
-    articleId: string;
-    index: number;
-}
-
-export interface ArticleInput {
-    relativePath?: string;
-    bytes?: string | Uint8Array;
-}
-
-export interface ParsedArticle {
-    relativePath: string;
-    source: SourceKind;
-    sourceRelativePath: string;
-    articleId: string | null;
-    title: string | null;
-    series: string | null;
-    localUpdatedAt: unknown;
-    references: ArticleReference[];
-}
-
-export interface ParseArticleResult {
-    article: ParsedArticle | null;
-    diagnostics: Diagnostic[];
-}
-
-export interface ValidationCounts {
-    sourceFiles: number;
-    parsedArticles: number;
-    qiitaArticles: number;
-    zennArticles: number;
-}
-
-export interface ValidationResult {
-    ok: boolean;
-    phase: string;
-    diagnostics: Diagnostic[];
-    counts: ValidationCounts;
-}
-
-export interface ValidateArticleFilesOptions {
-    phase?: string;
-    manifest?: unknown | null;
-    manifestFile?: string;
-    previousManifest?: unknown;
-    previousManifestFile?: string;
-    requireManifest?: boolean;
-}
-
-export interface ValidateArticlesDirectoryOptions
-    extends ValidateArticleFilesOptions {
-    previousManifestPath?: string | null;
-}
-
-export interface ValidationIo {
-    log(message: string): unknown;
-    error(message: string): unknown;
-}
+export type {
+    ArticleInput,
+    ArticleReference,
+    Diagnostic,
+    ParsedArticle,
+    ParseArticleResult,
+    Platform,
+    SourceKind,
+    UnknownRecord,
+    ValidateArticleFilesOptions,
+    ValidateArticlesDirectoryOptions,
+    ValidationCounts,
+    ValidationIo,
+    ValidationPhase,
+    ValidationResult,
+} from './article_validation/types.ts';
 
 const fs: typeof import('node:fs') = require('node:fs');
 const path: typeof import('node:path') = require('node:path');
-const { TextDecoder }: typeof import('node:util') = require('node:util');
 const matter: typeof import('gray-matter') = require('gray-matter');
-
-const SOURCE_KINDS = new Set<SourceKind>(['share', 'qiita', 'zenn']);
-const PLATFORMS: Platform[] = ['qiita', 'zenn'];
-const SERIES_START = '<!-- START_SERIES -->';
-const SERIES_END = '<!-- END_SERIES -->';
-const ARTICLE_ID_PATTERN = /^[0-9a-f]{32}$/;
-const ARTICLE_STATES = new Set<string>(['active', 'retiring', 'retired']);
-const TARGET_DESIRED_STATES = new Set<string>(['published', 'withdrawn']);
-const TIMESTAMP_WITH_ZONE =
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
-
-function createDiagnostic(code: string, file: string, message: string): Diagnostic {
-    return { code, file, message };
-}
+const {
+    ARTICLE_ID_PATTERN,
+    ARTICLE_STATES,
+    PLATFORMS,
+    SERIES_END,
+    SERIES_START,
+    SOURCE_KINDS,
+    TARGET_DESIRED_STATES,
+} = require(
+    './article_validation/constants.ts'
+) as ArticleValidationConstantsExports;
+const {
+    createDiagnostic,
+} = require(
+    './article_validation/diagnostics.ts'
+) as ArticleValidationDiagnosticsExports;
+const {
+    analyzeArticleReferences,
+    decodeUtf8,
+    extractArticleReferences,
+    isTimestampWithTimezone,
+    isTrimmedNfcString,
+    validateBytes,
+    validateSeriesMarkers,
+} = require(
+    './article_validation/article_syntax.ts'
+) as ArticleValidationSyntaxExports;
 
 function normalizePath(filePath: string): string {
     return filePath.replaceAll('\\', '/').replace(/^\.\/+/, '');
@@ -95,242 +78,6 @@ function normalizePath(filePath: string): string {
 
 function collisionKey(filePath: string): string {
     return normalizePath(filePath).normalize('NFC').toLowerCase();
-}
-
-function countOccurrences(content: string, needle: string): number {
-    let count = 0;
-    let offset = 0;
-
-    while ((offset = content.indexOf(needle, offset)) !== -1) {
-        count += 1;
-        offset += needle.length;
-    }
-
-    return count;
-}
-
-function analyzeArticleReferences(
-    content: string,
-    file = '(content)',
-): { references: ArticleReference[]; diagnostics: Diagnostic[] } {
-    const references: ArticleReference[] = [];
-    const diagnostics: Diagnostic[] = [];
-    let offset = 0;
-
-    while (offset < content.length) {
-        const openIndex = content.indexOf('<<<', offset);
-        const closeIndex = content.indexOf('>>>', offset);
-
-        if (closeIndex !== -1 && (openIndex === -1 || closeIndex < openIndex)) {
-            diagnostics.push(
-                createDiagnostic(
-                    'MALFORMED_ARTICLE_REFERENCE',
-                    file,
-                    `対応する開始記号がない >>> を offset ${closeIndex} で検出しました。`,
-                ),
-            );
-            offset = closeIndex + 3;
-            continue;
-        }
-
-        if (openIndex === -1) {
-            break;
-        }
-
-        const matchingClose = content.indexOf('>>>', openIndex + 3);
-        if (matchingClose === -1) {
-            diagnostics.push(
-                createDiagnostic(
-                    'MALFORMED_ARTICLE_REFERENCE',
-                    file,
-                    `閉じられていない <<< を offset ${openIndex} で検出しました。`,
-                ),
-            );
-            break;
-        }
-
-        const rawReference = content.slice(openIndex + 3, matchingClose);
-        const malformed =
-            (openIndex > 0 && content[openIndex - 1] === '<') ||
-            content[matchingClose + 3] === '>' ||
-            rawReference.trim().length === 0 ||
-            /[<>\r\n]/.test(rawReference) ||
-            rawReference !== rawReference.trim();
-
-        if (malformed) {
-            diagnostics.push(
-                createDiagnostic(
-                    'MALFORMED_ARTICLE_REFERENCE',
-                    file,
-                    `<<<article:article_id>>> 形式ではない参照を offset ${openIndex} で検出しました。`,
-                ),
-            );
-            offset = matchingClose + 3;
-            continue;
-        }
-
-        const match = rawReference.match(
-            /^article:([0-9a-f]{32})$/,
-        );
-        if (match) {
-            references.push({
-                articleId: match[1],
-                index: openIndex,
-            });
-        } else if (rawReference.startsWith('article:')) {
-            diagnostics.push(
-                createDiagnostic(
-                    'INVALID_ARTICLE_REFERENCE',
-                    file,
-                    `参照のarticle_idが32桁の小文字16進数ではありません: ${rawReference}`,
-                ),
-            );
-        } else {
-            diagnostics.push(
-                createDiagnostic(
-                    'LEGACY_TITLE_REFERENCE',
-                    file,
-                    `タイトル参照 <<<${rawReference}>>> は禁止されています。<<<article:32hex-id>>> を使用してください。`,
-                ),
-            );
-        }
-        offset = matchingClose + 3;
-    }
-
-    return { references, diagnostics };
-}
-
-function extractArticleReferences(content: string): ArticleReference[] {
-    return analyzeArticleReferences(content).references;
-}
-
-function isTimestampWithTimezone(value: unknown): value is string {
-    return (
-        typeof value === 'string' &&
-        TIMESTAMP_WITH_ZONE.test(value) &&
-        !Number.isNaN(Date.parse(value))
-    );
-}
-
-function isTrimmedNfcString(value: unknown): value is string {
-    return (
-        typeof value === 'string' &&
-        value.length > 0 &&
-        value === value.trim() &&
-        value === value.normalize('NFC')
-    );
-}
-
-function validateBytes(buffer: Uint8Array, file: string): Diagnostic[] {
-    const diagnostics: Diagnostic[] = [];
-
-    if (
-        buffer.length >= 3 &&
-        buffer[0] === 0xef &&
-        buffer[1] === 0xbb &&
-        buffer[2] === 0xbf
-    ) {
-        diagnostics.push(
-            createDiagnostic(
-                'UTF8_BOM',
-                file,
-                'UTF-8 BOMは許可されていません。',
-            ),
-        );
-    }
-
-    let nulCount = 0;
-    let firstNulOffset = -1;
-    for (let index = 0; index < buffer.length; index += 1) {
-        const byte = buffer[index];
-        if (byte === 0) {
-            nulCount += 1;
-            if (firstNulOffset === -1) {
-                firstNulOffset = index;
-            }
-        } else if (
-            byte < 0x20 &&
-            byte !== 0x09 &&
-            byte !== 0x0a &&
-            byte !== 0x0d
-        ) {
-            diagnostics.push(
-                createDiagnostic(
-                    'C0_CONTROL_BYTE',
-                    file,
-                    `許可されていないC0制御バイト 0x${byte
-                        .toString(16)
-                        .padStart(2, '0')} を offset ${index} で検出しました。`,
-                ),
-            );
-        }
-    }
-
-    if (nulCount > 0) {
-        diagnostics.push(
-            createDiagnostic(
-                'NUL_BYTE',
-                file,
-                `NULバイトを ${nulCount} 個検出しました（最初の offset: ${firstNulOffset}）。`,
-            ),
-        );
-    }
-
-    return diagnostics;
-}
-
-function validateSeriesMarkers(content: string, file: string): Diagnostic[] {
-    const diagnostics: Diagnostic[] = [];
-    const startCount = countOccurrences(content, SERIES_START);
-    const endCount = countOccurrences(content, SERIES_END);
-
-    if (startCount !== endCount) {
-        diagnostics.push(
-            createDiagnostic(
-                'SERIES_MARKER_MISMATCH',
-                file,
-                `${SERIES_START} と ${SERIES_END} の数が一致しません。`,
-            ),
-        );
-        return diagnostics;
-    }
-
-    if (startCount > 1) {
-        diagnostics.push(
-            createDiagnostic(
-                'SERIES_MARKER_MULTIPLE',
-                file,
-                'シリーズリンクブロックは1記事につき最大1組です。',
-            ),
-        );
-        return diagnostics;
-    }
-
-    if (
-        startCount === 1 &&
-        content.indexOf(SERIES_START) > content.indexOf(SERIES_END)
-    ) {
-        diagnostics.push(
-            createDiagnostic(
-                'SERIES_MARKER_ORDER',
-                file,
-                'シリーズリンクブロックの終了マーカーが開始マーカーより前にあります。',
-            ),
-        );
-    }
-
-    return diagnostics;
-}
-
-function decodeUtf8(
-    bytes: string | Uint8Array | null | undefined,
-): { buffer: Buffer; content: string } {
-    const buffer =
-        typeof bytes === 'string'
-            ? Buffer.from(bytes, 'utf8')
-            : Buffer.from(bytes ?? []);
-    const decoder = new TextDecoder('utf-8', { fatal: true });
-    return { buffer, content: decoder.decode(buffer) };
 }
 
 function parseArticle(input: ArticleInput): ParseArticleResult {
