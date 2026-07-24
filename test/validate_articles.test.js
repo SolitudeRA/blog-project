@@ -16,7 +16,7 @@ const {
 const {
     defaultGitRunner,
     loadPreviousManifestFromGit,
-} = require('../scripts/resolve_manifest_history');
+} = require('../scripts/resolve_manifest_history.ts');
 
 function markdown({
     articleId,
@@ -865,7 +865,7 @@ test('distribution workflow resolves reachable history before child writes', () 
         ),
         'utf8',
     );
-    const resolveIndex = workflow.indexOf('resolve_manifest_history.js');
+    const resolveIndex = workflow.indexOf('resolve_manifest_history.ts');
     const validationIndex = workflow.indexOf(
         'Validate Qiita and Zenn source sets before writes',
     );

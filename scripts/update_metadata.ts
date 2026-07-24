@@ -1,18 +1,79 @@
 'use strict';
 
-const fs = require('fs-extra');
-const matter = require('gray-matter');
-const path = require('node:path');
-const { defaultGitRunner } = require('./resolve_manifest_history');
+interface GitExecutionResult {
+    error?: Error;
+    signal?: NodeJS.Signals | null;
+    status: number | null;
+    stdout: string;
+    stderr: string;
+}
+
+type GitRunner = (
+    rootDir: string,
+    args: readonly string[],
+) => GitExecutionResult;
+
+interface ManifestHistoryModule {
+    defaultGitRunner: GitRunner;
+}
+
+interface MetadataOptions {
+    rootDir?: string;
+    gitRunner?: GitRunner;
+    log?: boolean;
+}
+
+interface TimestampOptions {
+    rootDir: string;
+    filePath: string;
+    gitRunner?: GitRunner;
+}
+
+interface ParsedArticle {
+    content: string;
+    parsed: import('gray-matter').GrayMatterFile<string>;
+}
+
+interface MetadataPlanArticle {
+    filePath: string;
+    relativePath: string;
+    timestamp: string;
+    changed: boolean;
+    content: string;
+}
+
+interface MetadataPlan {
+    rootDir: string;
+    directoryPath: string;
+    plans: MetadataPlanArticle[];
+}
+
+interface MetadataUpdateResult {
+    processed: number;
+    changed: number;
+    unchanged: number;
+    writes: string[];
+}
+
+const fs: typeof import('fs-extra') = require('fs-extra');
+const matter: typeof import('gray-matter') = require('gray-matter');
+const path: typeof import('node:path') = require('node:path');
+const {
+    defaultGitRunner,
+}: ManifestHistoryModule = require('./resolve_manifest_history.ts');
 
 const STRICT_ISO_TIMESTAMP =
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
-function normalizeRelativePath(value) {
+function normalizeRelativePath(value: string): string {
     return value.split(path.sep).join('/');
 }
 
-function assertPathInside(rootDir, candidatePath, label) {
+function assertPathInside(
+    rootDir: string,
+    candidatePath: string,
+    label: string,
+): string {
     const relativePath = path.relative(rootDir, candidatePath);
     if (
         relativePath === '' ||
@@ -25,12 +86,19 @@ function assertPathInside(rootDir, candidatePath, label) {
     return normalizeRelativePath(relativePath);
 }
 
-function runGitChecked(gitRunner, rootDir, args, operation) {
-    let result;
+function runGitChecked(
+    gitRunner: GitRunner,
+    rootDir: string,
+    args: readonly string[],
+    operation: string,
+): string {
+    let result: GitExecutionResult;
     try {
         result = gitRunner(rootDir, args);
     } catch (error) {
-        throw new Error(`${operation} could not start: ${error.message}`);
+        throw new Error(
+            `${operation} could not start: ${(error as Error).message}`,
+        );
     }
 
     if (!result || typeof result !== 'object') {
@@ -49,7 +117,7 @@ function runGitChecked(gitRunner, rootDir, args, operation) {
     return result.stdout;
 }
 
-function parseGitTimestamp(output, relativePath) {
+function parseGitTimestamp(output: string, relativePath: string): string {
     const values = output
         .split(/\r?\n/)
         .map((value) => value.trim())
@@ -70,7 +138,7 @@ function parseGitTimestamp(output, relativePath) {
     return values[0];
 }
 
-function getLastCommitTimestamp(options) {
+function getLastCommitTimestamp(options: TimestampOptions): string {
     const {
         rootDir,
         filePath,
@@ -93,12 +161,14 @@ function getLastCommitTimestamp(options) {
     return parseGitTimestamp(output, relativePath);
 }
 
-function listMarkdownFiles(directoryPath) {
-    let directoryStat;
+function listMarkdownFiles(directoryPath: string): string[] {
+    let directoryStat: import('node:fs').Stats;
     try {
         directoryStat = fs.lstatSync(directoryPath);
     } catch (error) {
-        throw new Error(`Cannot inspect article directory ${directoryPath}: ${error.message}`);
+        throw new Error(
+            `Cannot inspect article directory ${directoryPath}: ${(error as Error).message}`,
+        );
     }
     if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
         throw new Error(`Article directory must be a regular directory: ${directoryPath}`);
@@ -118,12 +188,14 @@ function listMarkdownFiles(directoryPath) {
         .sort((left, right) => left.localeCompare(right));
 }
 
-function parseArticle(filePath) {
-    let content;
+function parseArticle(filePath: string): ParsedArticle {
+    let content: string;
     try {
         content = fs.readFileSync(filePath, 'utf8');
     } catch (error) {
-        throw new Error(`Cannot read article ${filePath}: ${error.message}`);
+        throw new Error(
+            `Cannot read article ${filePath}: ${(error as Error).message}`,
+        );
     }
     if (!/^---\r?\n/.test(content)) {
         throw new Error(`Article is missing front matter: ${filePath}`);
@@ -135,17 +207,22 @@ function parseArticle(filePath) {
             parsed: matter(content),
         };
     } catch (error) {
-        throw new Error(`Cannot parse article ${filePath}: ${error.message}`);
+        throw new Error(
+            `Cannot parse article ${filePath}: ${(error as Error).message}`,
+        );
     }
 }
 
-function planMetadataUpdates(directory, options = {}) {
+function planMetadataUpdates(
+    directory: string,
+    options: MetadataOptions = {},
+): MetadataPlan {
     const rootDir = path.resolve(options.rootDir || process.cwd());
     const directoryPath = path.resolve(rootDir, directory);
     assertPathInside(rootDir, directoryPath, 'Article directory');
 
     const gitRunner = options.gitRunner || defaultGitRunner;
-    const plans = [];
+    const plans: MetadataPlanArticle[] = [];
 
     // Resolve every source and Git timestamp before writing anything. A
     // malformed source, missing history, or Git failure is therefore zero-write.
@@ -178,8 +255,10 @@ function planMetadataUpdates(directory, options = {}) {
     };
 }
 
-function applyMetadataUpdates(plan) {
-    const writes = [];
+function applyMetadataUpdates(
+    plan: MetadataPlan,
+): MetadataUpdateResult {
+    const writes: string[] = [];
     for (const article of plan.plans) {
         if (!article.changed) {
             continue;
@@ -195,7 +274,10 @@ function applyMetadataUpdates(plan) {
     };
 }
 
-function updateMetadata(directory, options = {}) {
+function updateMetadata(
+    directory: string,
+    options: MetadataOptions = {},
+): MetadataUpdateResult {
     const plan = planMetadataUpdates(directory, options);
     const result = applyMetadataUpdates(plan);
 
@@ -227,7 +309,7 @@ if (require.main === module) {
     const targetDir = process.argv[2];
     if (!targetDir || process.argv.length !== 3) {
         console.error(
-            'Usage: node scripts/update_metadata.js <article-directory>',
+            'Usage: node scripts/update_metadata.ts <article-directory>',
         );
         process.exitCode = 1;
     } else {
@@ -238,7 +320,7 @@ if (require.main === module) {
                 + `changed=${result.changed}, unchanged=${result.unchanged}`,
             );
         } catch (error) {
-            console.error(error.message);
+            console.error((error as Error).message);
             process.exitCode = 1;
         }
     }

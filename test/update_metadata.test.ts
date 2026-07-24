@@ -1,15 +1,57 @@
 'use strict';
 
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const test = require('node:test');
-const matter = require('gray-matter');
-const { defaultGitRunner } = require('../scripts/resolve_manifest_history');
-const { updateMetadata } = require('../scripts/update_metadata');
+interface GitExecutionResult {
+    error?: Error;
+    signal?: NodeJS.Signals | null;
+    status: number | null;
+    stdout: string;
+    stderr: string;
+}
 
-function runGit(rootDir, args) {
+type GitRunner = (
+    rootDir: string,
+    args: readonly string[],
+) => GitExecutionResult;
+
+interface ManifestHistoryModule {
+    defaultGitRunner: GitRunner;
+}
+
+interface MetadataUpdateOptions {
+    rootDir?: string;
+    gitRunner?: GitRunner;
+    log?: boolean;
+}
+
+interface MetadataUpdateResult {
+    processed: number;
+    changed: number;
+    unchanged: number;
+    writes: string[];
+}
+
+interface MetadataModule {
+    updateMetadata(
+        directory: string,
+        options?: MetadataUpdateOptions,
+    ): MetadataUpdateResult;
+}
+
+const assert: typeof import('node:assert/strict') =
+    require('node:assert/strict');
+const fs: typeof import('node:fs') = require('node:fs');
+const os: typeof import('node:os') = require('node:os');
+const path: typeof import('node:path') = require('node:path');
+const test: typeof import('node:test') = require('node:test');
+const matter: typeof import('gray-matter') = require('gray-matter');
+const {
+    defaultGitRunner,
+}: ManifestHistoryModule = require('../scripts/resolve_manifest_history.ts');
+const {
+    updateMetadata,
+}: MetadataModule = require('../scripts/update_metadata.ts');
+
+function runGit(rootDir: string, args: readonly string[]): string {
     const result = defaultGitRunner(rootDir, args);
     assert.equal(
         result.status,
@@ -19,7 +61,11 @@ function runGit(rootDir, args) {
     return result.stdout.trim();
 }
 
-function commitAt(rootDir, message, timestamp) {
+function commitAt(
+    rootDir: string,
+    message: string,
+    timestamp: string,
+): void {
     const previousAuthorDate = process.env.GIT_AUTHOR_DATE;
     const previousCommitterDate = process.env.GIT_COMMITTER_DATE;
     process.env.GIT_AUTHOR_DATE = timestamp;
@@ -40,13 +86,13 @@ function commitAt(rootDir, message, timestamp) {
     }
 }
 
-function initializeRepository(rootDir) {
+function initializeRepository(rootDir: string): void {
     runGit(rootDir, ['init']);
     runGit(rootDir, ['config', 'user.name', 'Metadata Test']);
     runGit(rootDir, ['config', 'user.email', 'metadata@example.com']);
 }
 
-function article(title, body = '# Body') {
+function article(title: string, body = '# Body'): string {
     return [
         '---',
         `title: ${JSON.stringify(title)}`,
@@ -59,17 +105,19 @@ function article(title, body = '# Body') {
     ].join('\n');
 }
 
-function readTimestamp(filePath) {
+function readTimestamp(filePath: string): unknown {
     return matter(fs.readFileSync(filePath, 'utf8')).data.local_updated_at;
 }
 
-function snapshot(filePaths) {
+function snapshot(filePaths: readonly string[]): Map<string, Buffer> {
     return new Map(
         filePaths.map((filePath) => [filePath, fs.readFileSync(filePath)]),
     );
 }
 
-function assertSnapshotUnchanged(before) {
+function assertSnapshotUnchanged(
+    before: ReadonlyMap<string, Buffer>,
+): void {
     for (const [filePath, bytes] of before) {
         assert.deepEqual(fs.readFileSync(filePath), bytes, filePath);
     }
