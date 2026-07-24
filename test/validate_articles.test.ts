@@ -1,22 +1,64 @@
 'use strict';
 
-const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const test = require('node:test');
+import type {
+    ArticleInput,
+    Diagnostic,
+    UnknownRecord,
+    ValidateArticlesExports,
+    ValidationResult,
+} from '../scripts/validate_articles.ts';
+import type {
+    ResolveManifestHistoryExports,
+} from '../scripts/resolve_manifest_history.ts';
+
+const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const crypto: typeof import('node:crypto') = require('node:crypto');
+const fs: typeof import('node:fs') = require('node:fs');
+const os: typeof import('node:os') = require('node:os');
+const path: typeof import('node:path') = require('node:path');
+const test: typeof import('node:test') = require('node:test');
 
 const {
     parseCliArgs,
     runCli,
     validateArticleFiles,
     validateArticlesDirectory,
-} = require('../scripts/validate_articles');
+} = require('../scripts/validate_articles.ts') as ValidateArticlesExports;
 const {
     defaultGitRunner,
     loadPreviousManifestFromGit,
-} = require('../scripts/resolve_manifest_history.ts');
+} = require('../scripts/resolve_manifest_history.ts') as ResolveManifestHistoryExports;
+
+interface MarkdownOptions {
+    articleId?: string;
+    title?: string;
+    tags?: string[];
+    series?: string | null;
+    localUpdatedAt?: string;
+    extra?: string;
+    body?: string;
+}
+
+interface TestArticleInput extends ArticleInput {
+    relativePath: string;
+    bytes: Buffer;
+}
+
+interface ManifestTarget {
+    desired: string;
+}
+
+interface ManifestEntry extends UnknownRecord {
+    article_id: string;
+    source: string | null;
+    article_state: string;
+    targets: Record<string, ManifestTarget>;
+}
+
+interface TestManifest {
+    schema_version: number;
+    articles: ManifestEntry[];
+}
 
 function markdown({
     articleId,
@@ -26,7 +68,7 @@ function markdown({
     localUpdatedAt,
     extra = '',
     body = '# 本文',
-} = {}) {
+}: MarkdownOptions = {}): string {
     const lines = [
         '---',
     ];
@@ -51,11 +93,14 @@ function markdown({
     return lines.join('\n');
 }
 
-function articleIdFor(value) {
+function articleIdFor(value: string): string {
     return crypto.createHash('sha256').update(value).digest('hex').slice(0, 32);
 }
 
-function article(relativePath, content = markdown()) {
+function article(
+    relativePath: string,
+    content: string | Buffer = markdown(),
+): TestArticleInput {
     if (Buffer.isBuffer(content) || /^article_id:/m.test(content)) {
         return { relativePath, bytes: Buffer.from(content) };
     }
@@ -69,7 +114,10 @@ function article(relativePath, content = markdown()) {
     return { relativePath, bytes: Buffer.from(withArticleId, 'utf8') };
 }
 
-function manifestEntry(relativePath, overrides = {}) {
+function manifestEntry(
+    relativePath: string,
+    overrides: Partial<ManifestEntry> = {},
+): ManifestEntry {
     const sourceKind = relativePath.split('/')[0];
     const targetNames =
         sourceKind === 'share' ? ['qiita', 'zenn'] : [sourceKind];
@@ -87,14 +135,14 @@ function manifestEntry(relativePath, overrides = {}) {
     };
 }
 
-function manifest(entries) {
+function manifest(entries: ManifestEntry[]): TestManifest {
     return {
         schema_version: 1,
         articles: entries,
     };
 }
 
-function writeManifest(root, entries) {
+function writeManifest(root: string, entries: ManifestEntry[]): void {
     fs.writeFileSync(
         path.join(root, 'manifest.json'),
         `${JSON.stringify(manifest(entries), null, 2)}\n`,
@@ -102,7 +150,11 @@ function writeManifest(root, entries) {
     );
 }
 
-function writeArticle(root, relativePath, content = markdown()) {
+function writeArticle(
+    root: string,
+    relativePath: string,
+    content: string | Buffer = markdown(),
+): TestArticleInput {
     const sourceArticle = article(relativePath, content);
     const destination = path.join(root, relativePath);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -110,11 +162,11 @@ function writeArticle(root, relativePath, content = markdown()) {
     return sourceArticle;
 }
 
-function codes(result) {
+function codes(result: ValidationResult): string[] {
     return result.diagnostics.map((item) => item.code);
 }
 
-function runGit(rootDir, args) {
+function runGit(rootDir: string, args: readonly string[]): string {
     const result = defaultGitRunner(rootDir, args);
     assert.equal(
         result.status,
@@ -302,10 +354,10 @@ test('CLI parses phase options and returns zero for a valid directory', () => {
     writeArticle(temporaryRoot, 'share/a.md');
     writeManifest(temporaryRoot, [manifestEntry('share/a.md')]);
 
-    const output = [];
+    const output: string[] = [];
     const io = {
-        log: (message) => output.push(message),
-        error: (message) => output.push(message),
+        log: (message: string) => output.push(message),
+        error: (message: string) => output.push(message),
     };
 
     try {
@@ -383,8 +435,11 @@ test('directory validation rejects symbolic links when the platform permits crea
                 'file',
             );
         } catch (error) {
-            if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
-                t.skip(`symlink creation is unavailable: ${error.code}`);
+            const errorCode = error instanceof Error
+                ? (error as NodeJS.ErrnoException).code
+                : undefined;
+            if (errorCode && ['EPERM', 'EACCES', 'ENOTSUP'].includes(errorCode)) {
+                t.skip(`symlink creation is unavailable: ${errorCode}`);
                 return;
             }
             throw error;
@@ -407,6 +462,7 @@ test('rejects BOM and disallowed C0 bytes and reports NUL count and first offset
     const nulDiagnostic = nulResult.diagnostics.find(
         (item) => item.code === 'NUL_BYTE',
     );
+    assert.ok(nulDiagnostic);
     assert.match(nulDiagnostic.message, /2/);
     assert.match(nulDiagnostic.message, /offset: 1/);
 
@@ -812,6 +868,7 @@ test('manifest resolver recovers the latest reachable manifest after a deletion 
         assert.equal(recovered.initialIntroduction, false);
         assert.equal(recovered.recoveredFromHistory, true);
         assert.equal(recovered.sourceRef, introductionCommit);
+        assert.ok(recovered.content);
         assert.deepEqual(JSON.parse(recovered.content), originalManifest);
 
         const reboundId = articleIdFor('replacement-id');

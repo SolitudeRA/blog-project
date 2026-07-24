@@ -1,6 +1,6 @@
 'use strict';
 
-interface GitExecutionResult {
+export interface GitExecutionResult {
     error?: Error;
     signal?: NodeJS.Signals | null;
     status: number | null;
@@ -8,24 +8,24 @@ interface GitExecutionResult {
     stderr: string;
 }
 
-type GitRunner = (
+export type GitRunner = (
     rootDir: string,
     args: readonly string[],
 ) => GitExecutionResult;
 
-interface ManifestHistoryOptions {
+export interface ManifestHistoryOptions {
     rootDir?: string;
     baselineRef?: string;
     gitRunner?: GitRunner;
 }
 
-interface HistoricalManifest {
+export interface HistoricalManifest {
     content: string;
     sourceRef: string;
     recoveredFromHistory: true;
 }
 
-interface ManifestHistoryResult {
+export interface ManifestHistoryResult {
     content?: string;
     initialIntroduction: boolean;
     baselineRef: string;
@@ -33,7 +33,7 @@ interface ManifestHistoryResult {
     recoveredFromHistory?: boolean;
 }
 
-interface CliOptions {
+export interface CliOptions {
     baselineRef: string;
     outputPath: string;
     githubOutputPath: string;
@@ -323,6 +323,14 @@ function writeGitHubResult(
         `path=${previousManifestPath}\n`,
         'utf8',
     );
+}
+
+export interface ResolveManifestHistoryExports {
+    defaultGitRunner: typeof defaultGitRunner;
+    findHistoricalManifest: typeof findHistoricalManifest;
+    loadPreviousManifestFromGit: typeof loadPreviousManifestFromGit;
+    parseCliArgs: typeof parseCliArgs;
+    writeGitHubResult: typeof writeGitHubResult;
 }
 
 module.exports = {

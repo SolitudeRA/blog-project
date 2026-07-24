@@ -39,7 +39,7 @@ Qiita Repo: https://github.com/SolitudeRA/qiita-repo
 ├── scripts/         # 自動化スクリプト
 │   ├── resolve_manifest_history.ts # 直前manifestのGit履歴解決
 │   ├── update_metadata.ts  # メタデータの更新スクリプト
-│   └── validate_articles.js # 公開前の安全性チェック
+│   └── validate_articles.ts # 公開前の安全性チェック
 ├── .github/         # GitHub Actions設定
 │   └── workflows/
 │       └── distribute.yml # 公開処理を自動化するワークフロー
@@ -235,7 +235,7 @@ with:
 
 ### スクリプト一覧
 
-- **`validate_articles.js`**
+- **`validate_articles.ts`**
   配布対象の記事をプラットフォーム別に検証し、破損ファイル、manifestとFront MatterのID不整合、曖昧なタイトル・シリーズ構造、解決不能なID参照を公開前に拒否します。
 
 - **`resolve_manifest_history.ts`**
