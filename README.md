@@ -71,15 +71,19 @@ npm ci
 
 ### 3. **GitHub Actionsを利用するためのSecretsの設定**
 
-GitHub Actionsを使用してリポジトリを自動更新するには、**Personal Access Token (PAT)** を設定する必要があります。
+GitHub Actions が子リポジトリへ配布用 Pull Request を作成・更新するには、
+**fine-grained Personal Access Token (PAT)** を設定する必要があります。
 
 #### 1. **Personal Access Tokenの生成**
 
 1. GitHubの[Personal Access Token設定ページ](https://github.com/settings/tokens)にアクセス。
 2. **"Generate new token"** をクリック。
-3. 必要なスコープを選択：
-   - **`repo`**: プライベートリポジトリへのアクセスを許可（プライベートリポジトリの場合）。
-4. トークンをコピーして保存します（トークンは一度しか表示されません）。
+3. 対象リポジトリを `Qiita-Repo` と `Zenn-Repo` だけに限定します。
+4. Repository permissions は次の最小権限を付与します。
+   - **Contents: Read and write**
+   - **Pull requests: Read and write**
+   - **Metadata: Read-only**
+5. トークンをコピーして保存します（トークンは一度しか表示されません）。
 
 #### 2. **Secretsへの登録**
 
@@ -93,10 +97,14 @@ GitHub Actionsを使用してリポジトリを自動更新するには、**Pers
 ### **重要な注意点**
 
 - **トークンの権限**：  
-  トークンのスコープは必要最低限にすることを推奨します。一般的には `repo` スコープのみで十分です。
+  対象は2つの子リポジトリだけに限定し、Actions や Administration など
+  配布に不要な権限は付与しません。
 
 - **トークンの安全管理**：  
   トークンは第三者に漏れないよう、必ずGitHub Secretsに保存してください。
+  子リポジトリの generator と依存関係は PAT を持たない runner で実行し、
+  許可されたパスだけを含む patch artifact を作ります。別の新しい runner が
+  patch を検証・適用した後、最終 publish step だけが PAT を受け取ります。
 
 ### 4. **articlesに記事を追加**
 
@@ -153,14 +161,9 @@ tags:
    - `articles/zenn` ディレクトリには Zenn 専用の記事を追加します。
    - `articles/qiita` ディレクトリには Qiita 専用の記事を追加します。
 
-2. **`main` ブランチへのプッシュ**  
-   変更を `main` ブランチにプッシュします。以下のようなコマンドを使用します：
-
-   ```bash
-   git add .
-   git commit -m "Update articles"
-   git push origin main
-   ```
+2. **Blog-Project の Pull Request をマージ**
+   変更を Pull Request として `main` に取り込みます。`distribute` check が
+   成功した変更だけをマージしてください。
 
 3. **GitHub Actionsによる自動処理**  
    プッシュがトリガーされると、GitHub Actions が以下の処理を自動で行います：
@@ -175,37 +178,42 @@ tags:
       - 更新後に配布用メタデータを再検証します。
 
    3. **Qiitaリポジトリへの分散**
-      - `articles/share` と `articles/qiita` 内の記事、およびmanifestが Qiita の子リポジトリ（例: `qiita-repo/pre-publish`）にコピーされ、コミット・プッシュされます。
+      - `articles/share` と `articles/qiita` 内の記事、およびmanifestから、
+        固定の自動化ブランチを更新します。
+      - `validate_and_publish` を required check とする Pull Request を作成し、
+        check 成功後に GitHub の auto-merge が rebase merge します。
+      - merge 後の Qiita `main` push でだけ、既存 binding の変更分を公開します。
 
    4. **Zennリポジトリへの分散**
-      - `articles/share` と `articles/zenn` 内の記事、およびmanifestが Zenn の子リポジトリ（例: `zenn-repo/pre-publish`）にコピーされ、コミット・プッシュされます。
+      - `articles/share` と `articles/zenn` 内の記事、およびmanifestを
+        自動化ブランチへコピーし、そのブランチ内で `articles/` と
+        `article-map.json` も生成します。
+      - `validate_pull_request` がソースと生成物の一致を読み取り専用で確認し、
+        check 成功後に auto-merge が rebase merge します。
+      - Zenn の `main` workflow は再検証だけを行い、追加 commit は作りません。
+
+   子リポジトリ側のコードを実行する準備 job と、PAT を使う publish job は
+   artifact 境界で分離されています。publish job は Blog-Project と target
+   `main` を新規 checkout し、target の npm script や Git hook を実行しません。
 
 ---
 
-### 注意事項: 実際のリポジトリリンクの設定
+### 注意事項: 子リポジトリの保護設定
 
-GitHub Actions を使用する前に、`distribute.yml` ワークフローで指定されている Qiita と Zenn リポジトリのリンクを、あなたのリポジトリに変更してください。
+自動配布を有効にする前に、両子リポジトリで rebase merge、auto-merge、
+head branch の自動削除を有効にします。さらに `main` を対象とする active な
+branch ruleset を作成し、strict required status check として Qiita は
+`validate_and_publish`、Zenn は `validate_pull_request` を
+GitHub Actions（App ID 15368）からの check に限定します。
+ユーザーや Actions App の bypass は設定しません。bypass actor は
+least-privilege PAT から取得する effective rules API には含まれないため、
+有効化前と定期監査時にリポジトリ管理画面で人が確認します。
 
-#### 対応箇所:
-以下の箇所でリポジトリ名を変更します：
-
-```yaml
-# Qiitaリポジトリ
-with:
-  repository: solitudeRA/qiita-repo  # ここを変更
-  ref: main
-  token: ${{ secrets.BLOG_PROJECT_TOKEN }}
-
-# Zennリポジトリ
-with:
-  repository: SolitudeRA/zenn-repo  # ここを変更
-  ref: main
-  token: ${{ secrets.BLOG_PROJECT_TOKEN }}
-```
-
-#### 実例:
-- Qiita リポジトリ: `your-username/your-qiita-repo`
-- Zenn リポジトリ: `your-username/your-zenn-repo`
+配布スクリプトは default branch、rebase merge、auto-merge、head branch
+自動削除、および `main` に実際に適用される required check と App ID を
+GitHub API で確認してから自動化ブランチを更新します。設定不足、複数の
+同一 head PR、target `main` の同時更新、自動化ブランチへの人手による変更は
+fail closed で停止します。
 
 ---
 
@@ -223,13 +231,21 @@ with:
 
 - **処理**:
   - `articles/share` と `articles/qiita` の記事を Qiita の子リポジトリ（例: `qiita-repo/pre-publish`）にコピー。
-  - コピー後、変更内容をコミットしてプッシュ。
+  - 固定の配布ブランチを更新し、required check 待ちの Pull Request を
+    find-or-create して rebase auto-merge を予約。
 
 #### 3. Zennリポジトリへの分散
 
 - **処理**:
   - `articles/share` と `articles/zenn` の記事を Zenn の子リポジトリ（例: `zenn-repo/pre-publish`）にコピー。
-  - コピー後、変更内容をコミットしてプッシュ。
+  - Zenn のロック済み依存関係で最終記事と binding map を生成。
+  - ソースと生成物を同じ配布 PR に含め、required check 成功後に
+    rebase auto-merge。
+
+一時的な API 障害や target `main` の更新で同期が停止した場合は、
+Blog-Project の Actions 画面から `Distribute Articles` の
+`workflow_dispatch` を `main` に対して再実行できます。同じ固定ブランチと
+PRを再利用するため、重複した配布 PR は作りません。
 
 ## 開発者向け情報
 
@@ -243,6 +259,12 @@ with:
 
 - **`update_metadata.ts`**
   `articles`ディレクトリ内のMarkdownファイルをスキャンし、各ファイルを最後に変更したGit commitのcommitter timestampを `local_updated_at` に反映します。ファイルシステムのmtimeには依存しません。
+
+- **`distribute_target.ts`**
+  検証済みスナップショットから子リポジトリの配布ブランチを決定的に再構築し、
+  許可パスだけの patch envelope を export / fresh checkout へ apply します。
+  required-check 設定、remote main、automation branch の所有権を確認してから、
+  単一の Pull Request を作成・更新して auto-merge を予約します。
 
 ### デバッグ
 
