@@ -33,13 +33,16 @@ jobs:
       - name: Run safety regression tests
         run: npm test
 
+      - name: Type-check migrated TypeScript
+        run: npm run typecheck
+
       - name: Load previous article manifest
         id: previous_manifest
         shell: bash
         env:
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          node scripts/resolve_manifest_history.js \
+          node scripts/resolve_manifest_history.ts \
             --baseline-ref "$BEFORE_SHA" \
             --output "$RUNNER_TEMP/previous-articles-manifest.json" \
             --github-output "$GITHUB_OUTPUT"
@@ -58,7 +61,7 @@ jobs:
 
       - name: Update local_updated_at in articles
         run: |
-          node scripts/update_metadata.js articles/share
+          node scripts/update_metadata.ts articles/share
 
       - name: Validate distributable metadata
         run: npm run validate:articles:distribution

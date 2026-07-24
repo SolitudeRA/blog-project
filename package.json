@@ -9,10 +9,16 @@
   "scripts": {
     "validate:articles": "node scripts/validate_articles.js articles",
     "validate:articles:distribution": "node scripts/validate_articles.js articles --phase=distribution",
-    "test": "node --test --experimental-test-isolation=none"
+    "test": "node --test --experimental-test-isolation=none",
+    "typecheck": "tsc --noEmit --project tsconfig.strict.json"
   },
   "dependencies": {
     "fs-extra": "11.4.0",
     "gray-matter": "4.0.3"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "11.0.4",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
   }
 }

@@ -1,21 +1,64 @@
 'use strict';
 
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+interface GitExecutionResult {
+    error?: Error;
+    signal?: NodeJS.Signals | null;
+    status: number | null;
+    stdout: string;
+    stderr: string;
+}
+
+type GitRunner = (
+    rootDir: string,
+    args: readonly string[],
+) => GitExecutionResult;
+
+interface ManifestHistoryOptions {
+    rootDir?: string;
+    baselineRef?: string;
+    gitRunner?: GitRunner;
+}
+
+interface HistoricalManifest {
+    content: string;
+    sourceRef: string;
+    recoveredFromHistory: true;
+}
+
+interface ManifestHistoryResult {
+    content?: string;
+    initialIntroduction: boolean;
+    baselineRef: string;
+    sourceRef: string | null;
+    recoveredFromHistory?: boolean;
+}
+
+interface CliOptions {
+    baselineRef: string;
+    outputPath: string;
+    githubOutputPath: string;
+}
+
+const fs: typeof import('node:fs') = require('node:fs');
+const os: typeof import('node:os') = require('node:os');
+const path: typeof import('node:path') = require('node:path');
+const { spawnSync }: typeof import('node:child_process') =
+    require('node:child_process');
 
 const MANIFEST_PATH = 'articles/manifest.json';
 const FULL_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-function defaultGitRunner(rootDir, args) {
+function defaultGitRunner(
+    rootDir: string,
+    args: readonly string[],
+): GitExecutionResult {
     const captureDir = fs.mkdtempSync(
         path.join(os.tmpdir(), 'blog-manifest-history-'),
     );
     const stdoutPath = path.join(captureDir, 'stdout');
     const stderrPath = path.join(captureDir, 'stderr');
-    let stdoutFd;
-    let stderrFd;
+    let stdoutFd: number | undefined;
+    let stderrFd: number | undefined;
 
     try {
         stdoutFd = fs.openSync(stdoutPath, 'wx');
@@ -48,7 +91,10 @@ function defaultGitRunner(rootDir, args) {
     }
 }
 
-function assertGitSuccess(result, operation) {
+function assertGitSuccess(
+    result: GitExecutionResult,
+    operation: string,
+): void {
     if (result.error) {
         throw new Error(`${operation} could not start: ${result.error.message}`);
     }
@@ -60,7 +106,11 @@ function assertGitSuccess(result, operation) {
     }
 }
 
-function assertCommit(rootDir, ref, gitRunner) {
+function assertCommit(
+    rootDir: string,
+    ref: string,
+    gitRunner: GitRunner,
+): void {
     const result = gitRunner(rootDir, [
         'cat-file',
         '-e',
@@ -69,7 +119,11 @@ function assertCommit(rootDir, ref, gitRunner) {
     assertGitSuccess(result, `checking baseline commit ${ref}`);
 }
 
-function manifestExistsAt(rootDir, ref, gitRunner) {
+function manifestExistsAt(
+    rootDir: string,
+    ref: string,
+    gitRunner: GitRunner,
+): boolean {
     const result = gitRunner(rootDir, [
         'ls-tree',
         '-z',
@@ -91,7 +145,11 @@ function manifestExistsAt(rootDir, ref, gitRunner) {
     return entries.length === 1;
 }
 
-function readManifestAt(rootDir, ref, gitRunner) {
+function readManifestAt(
+    rootDir: string,
+    ref: string,
+    gitRunner: GitRunner,
+): string {
     const result = gitRunner(rootDir, [
         'show',
         `${ref}:${MANIFEST_PATH}`,
@@ -100,7 +158,10 @@ function readManifestAt(rootDir, ref, gitRunner) {
     return result.stdout;
 }
 
-function resolveZeroBaseline(rootDir, gitRunner) {
+function resolveZeroBaseline(
+    rootDir: string,
+    gitRunner: GitRunner,
+): null {
     const result = gitRunner(rootDir, [
         'rev-list',
         '--parents',
@@ -125,7 +186,11 @@ function resolveZeroBaseline(rootDir, gitRunner) {
     );
 }
 
-function findHistoricalManifest(rootDir, baselineRef, gitRunner) {
+function findHistoricalManifest(
+    rootDir: string,
+    baselineRef: string,
+    gitRunner: GitRunner,
+): HistoricalManifest | null {
     const history = gitRunner(rootDir, [
         'log',
         '--full-history',
@@ -157,7 +222,9 @@ function findHistoricalManifest(rootDir, baselineRef, gitRunner) {
     return null;
 }
 
-function loadPreviousManifestFromGit(options = {}) {
+function loadPreviousManifestFromGit(
+    options: ManifestHistoryOptions = {},
+): ManifestHistoryResult {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
     const baselineRef = options.baselineRef;
     const gitRunner = options.gitRunner || defaultGitRunner;
@@ -207,8 +274,8 @@ function loadPreviousManifestFromGit(options = {}) {
     };
 }
 
-function parseCliArgs(args) {
-    const options = {};
+function parseCliArgs(args: readonly string[]): CliOptions {
+    const options: Partial<CliOptions> = {};
     for (let index = 0; index < args.length; index += 2) {
         const name = args[index];
         const value = args[index + 1];
@@ -231,18 +298,21 @@ function parseCliArgs(args) {
         !options.githubOutputPath
     ) {
         throw new Error(
-            'usage: node scripts/resolve_manifest_history.js '
+            'usage: node scripts/resolve_manifest_history.ts '
             + '--baseline-ref <ref> --output <path> '
             + '--github-output <path>',
         );
     }
-    return options;
+    return options as CliOptions;
 }
 
-function writeGitHubResult(options, result) {
+function writeGitHubResult(
+    options: CliOptions,
+    result: ManifestHistoryResult,
+): void {
     let previousManifestPath = '';
     if (!result.initialIntroduction) {
-        fs.writeFileSync(options.outputPath, result.content, {
+        fs.writeFileSync(options.outputPath, result.content!, {
             encoding: 'utf8',
             flag: 'wx',
         });
@@ -281,7 +351,7 @@ if (require.main === module) {
             console.log(`Loaded the previous manifest from ${result.sourceRef}.`);
         }
     } catch (error) {
-        console.error(error.message);
+        console.error((error as Error).message);
         process.exitCode = 1;
     }
 }

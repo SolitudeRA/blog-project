@@ -37,7 +37,8 @@ Qiita Repo: https://github.com/SolitudeRA/qiita-repo
 │   ├── share/       # ZennとQiitaの両方で共有される記事
 │   └── zenn/        # Zenn専用の記事
 ├── scripts/         # 自動化スクリプト
-│   ├── update_metadata.js  # メタデータの更新スクリプト
+│   ├── resolve_manifest_history.ts # 直前manifestのGit履歴解決
+│   ├── update_metadata.ts  # メタデータの更新スクリプト
 │   └── validate_articles.js # 公開前の安全性チェック
 ├── .github/         # GitHub Actions設定
 │   └── workflows/
@@ -214,7 +215,7 @@ with:
 
 #### 1. 記事のメタデータを更新
 
-- **スクリプト**: `update_metadata.js`
+- **スクリプト**: `update_metadata.ts`
 - **処理内容**:
   - 各記事の `local_updated_at` フィールドをファイルの最終更新日時で更新。
 
@@ -237,7 +238,10 @@ with:
 - **`validate_articles.js`**
   配布対象の記事をプラットフォーム別に検証し、破損ファイル、manifestとFront MatterのID不整合、曖昧なタイトル・シリーズ構造、解決不能なID参照を公開前に拒否します。
 
-- **`update_metadata.js`**  
+- **`resolve_manifest_history.ts`**
+  配布前の比較に使う直前manifestをGit履歴からfail-closedで解決します。
+
+- **`update_metadata.ts`**
   `articles`ディレクトリ内のMarkdownファイルをスキャンし、各ファイルを最後に変更したGit commitのcommitter timestampを `local_updated_at` に反映します。ファイルシステムのmtimeには依存しません。
 
 ### デバッグ
@@ -251,8 +255,11 @@ npm run validate:articles
 # 自動テストを実行
 npm test
 
+# TypeScript移行ベースラインを検査
+npm run typecheck
+
 # メタデータを更新
-node scripts/update_metadata.js <directory>
+node scripts/update_metadata.ts <directory>
 
 # 更新後の配布用メタデータを検証
 npm run validate:articles:distribution

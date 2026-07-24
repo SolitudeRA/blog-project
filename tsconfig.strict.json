@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "checkJs": false,
+    "strict": true
+  },
+  "include": [
+    "scripts/resolve_manifest_history.ts",
+    "scripts/update_metadata.ts",
+    "test/update_metadata.test.ts"
+  ]
+}
