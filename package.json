@@ -1,0 +1,18 @@
+{
+  "name": "blog-project",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "validate:articles": "node scripts/validate_articles.js articles",
+    "validate:articles:distribution": "node scripts/validate_articles.js articles --phase=distribution",
+    "test": "node --test --experimental-test-isolation=none"
+  },
+  "dependencies": {
+    "fs-extra": "11.2.0",
+    "gray-matter": "4.0.3"
+  }
+}

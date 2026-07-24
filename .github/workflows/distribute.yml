@@ -5,6 +5,13 @@ on:
     branches:
       - main
 
+concurrency:
+  group: blog-project-distribution
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   distribute:
     runs-on: ubuntu-latest
@@ -20,11 +27,40 @@ jobs:
           node-version: '22.11.0'
 
       - name: Install dependencies
-        run: npm install gray-matter fs-extra
+        run: npm ci
+
+      - name: Run safety regression tests
+        run: npm test
+
+      - name: Load previous article manifest
+        id: previous_manifest
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          node scripts/resolve_manifest_history.js \
+            --baseline-ref "$BEFORE_SHA" \
+            --output "$RUNNER_TEMP/previous-articles-manifest.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Validate Qiita and Zenn source sets before writes
+        env:
+          PREVIOUS_MANIFEST_PATH: ${{ steps.previous_manifest.outputs.path }}
+        shell: bash
+        run: |
+          if [[ -n "$PREVIOUS_MANIFEST_PATH" ]]; then
+            npm run validate:articles -- \
+              "--previous-manifest=$PREVIOUS_MANIFEST_PATH"
+          else
+            npm run validate:articles
+          fi
 
       - name: Update local_updated_at in articles
         run: |
           node scripts/update_metadata.js articles/share
+
+      - name: Validate distributable metadata
+        run: npm run validate:articles:distribution
 
       - name: Checkout from Qiita repository
         uses: actions/checkout@v4
@@ -34,26 +70,6 @@ jobs:
           token: ${{ secrets.BLOG_PROJECT_TOKEN }}
           path: qiita-repo
 
-      - name: Ensure qiita-repo/pre-publish directory exists
-        run: |
-          mkdir -p qiita-repo/pre-publish
-
-      - name: Push to Qiita repository
-        run: |
-          rm -rf qiita-repo/pre-publish/*
-          cp -r articles/share/* qiita-repo/pre-publish/
-          if [ -d articles/qiita ] && [ "$(ls -A articles/qiita)" ]; then
-            cp -r articles/qiita/* qiita-repo/pre-publish/
-          else
-            echo "Directory articles/qiita does not exist or is empty. Skipping copy step."
-          fi
-          cd qiita-repo/pre-publish/
-          git config --local user.name "SolitudeRA"
-          git config --local user.email "solitude@protogalaxy.me"
-          git add .
-          git commit -m "Update pre-publish articles for Qiita from main-repo"
-          git push
-
       - name: Checkout from Zenn repository
         uses: actions/checkout@v4
         with:
@@ -62,22 +78,51 @@ jobs:
           token: ${{ secrets.BLOG_PROJECT_TOKEN }}
           path: zenn-repo
 
-      - name: Ensure zenn-repo/pre-publish directory exists
+      - name: Prepare both validated target repositories
         run: |
+          mkdir -p qiita-repo/pre-publish
           mkdir -p zenn-repo/pre-publish
-
-      - name: Push to Zenn repository
-        run: |
+          rm -rf qiita-repo/pre-publish/*
           rm -rf zenn-repo/pre-publish/*
+
+          cp -r articles/share/* qiita-repo/pre-publish/
+          cp articles/manifest.json qiita-repo/pre-publish/manifest.json
+          if [ -d articles/qiita ] && [ "$(ls -A articles/qiita)" ]; then
+            cp -r articles/qiita/* qiita-repo/pre-publish/
+          else
+            echo "Directory articles/qiita does not exist or is empty. Skipping copy step."
+          fi
+
           cp -r articles/share/* zenn-repo/pre-publish/
+          cp articles/manifest.json zenn-repo/pre-publish/manifest.json
           if [ -d articles/zenn ] && [ "$(ls -A articles/zenn)" ]; then
             cp -r articles/zenn/* zenn-repo/pre-publish/
           else
             echo "Directory articles/zenn does not exist or is empty. Skipping copy step."
           fi
-          cd zenn-repo/pre-publish/
+
+      - name: Push to Qiita repository
+        working-directory: qiita-repo/pre-publish
+        run: |
           git config --local user.name "SolitudeRA"
           git config --local user.email "solitude@protogalaxy.me"
-          git add .
-          git commit -m "Update pre-publish articles for Zenn from main-repo"
-          git push
+          git add -- .
+          if git diff --cached --quiet; then
+            echo "No Qiita pre-publish changes detected. Skipping commit."
+          else
+            git commit -m "Update pre-publish articles for Qiita from main-repo"
+            git push
+          fi
+
+      - name: Push to Zenn repository
+        working-directory: zenn-repo/pre-publish
+        run: |
+          git config --local user.name "SolitudeRA"
+          git config --local user.email "solitude@protogalaxy.me"
+          git add -- .
+          if git diff --cached --quiet; then
+            echo "No Zenn pre-publish changes detected. Skipping commit."
+          else
+            git commit -m "Update pre-publish articles for Zenn from main-repo"
+            git push
+          fi
