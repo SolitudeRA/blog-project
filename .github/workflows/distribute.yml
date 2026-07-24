@@ -33,7 +33,7 @@ jobs:
       - name: Run safety regression tests
         run: npm test
 
-      - name: Type-check migrated TypeScript
+      - name: Type-check TypeScript
         run: npm run typecheck
 
       - name: Load previous article manifest

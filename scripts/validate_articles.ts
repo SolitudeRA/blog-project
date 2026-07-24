@@ -1,33 +1,103 @@
 'use strict';
 
-const fs = require('node:fs');
-const path = require('node:path');
-const { TextDecoder } = require('node:util');
-const matter = require('gray-matter');
+export type SourceKind = 'share' | 'qiita' | 'zenn';
+export type Platform = 'qiita' | 'zenn';
+export type ValidationPhase = 'source' | 'distribution';
+export type UnknownRecord = Record<string, unknown>;
 
-const SOURCE_KINDS = new Set(['share', 'qiita', 'zenn']);
-const PLATFORMS = ['qiita', 'zenn'];
+export interface Diagnostic {
+    code: string;
+    file: string;
+    message: string;
+}
+
+export interface ArticleReference {
+    articleId: string;
+    index: number;
+}
+
+export interface ArticleInput {
+    relativePath?: string;
+    bytes?: string | Uint8Array;
+}
+
+export interface ParsedArticle {
+    relativePath: string;
+    source: SourceKind;
+    sourceRelativePath: string;
+    articleId: string | null;
+    title: string | null;
+    series: string | null;
+    localUpdatedAt: unknown;
+    references: ArticleReference[];
+}
+
+export interface ParseArticleResult {
+    article: ParsedArticle | null;
+    diagnostics: Diagnostic[];
+}
+
+export interface ValidationCounts {
+    sourceFiles: number;
+    parsedArticles: number;
+    qiitaArticles: number;
+    zennArticles: number;
+}
+
+export interface ValidationResult {
+    ok: boolean;
+    phase: string;
+    diagnostics: Diagnostic[];
+    counts: ValidationCounts;
+}
+
+export interface ValidateArticleFilesOptions {
+    phase?: string;
+    manifest?: unknown | null;
+    manifestFile?: string;
+    previousManifest?: unknown;
+    previousManifestFile?: string;
+    requireManifest?: boolean;
+}
+
+export interface ValidateArticlesDirectoryOptions
+    extends ValidateArticleFilesOptions {
+    previousManifestPath?: string | null;
+}
+
+export interface ValidationIo {
+    log(message: string): unknown;
+    error(message: string): unknown;
+}
+
+const fs: typeof import('node:fs') = require('node:fs');
+const path: typeof import('node:path') = require('node:path');
+const { TextDecoder }: typeof import('node:util') = require('node:util');
+const matter: typeof import('gray-matter') = require('gray-matter');
+
+const SOURCE_KINDS = new Set<SourceKind>(['share', 'qiita', 'zenn']);
+const PLATFORMS: Platform[] = ['qiita', 'zenn'];
 const SERIES_START = '<!-- START_SERIES -->';
 const SERIES_END = '<!-- END_SERIES -->';
 const ARTICLE_ID_PATTERN = /^[0-9a-f]{32}$/;
-const ARTICLE_STATES = new Set(['active', 'retiring', 'retired']);
-const TARGET_DESIRED_STATES = new Set(['published', 'withdrawn']);
+const ARTICLE_STATES = new Set<string>(['active', 'retiring', 'retired']);
+const TARGET_DESIRED_STATES = new Set<string>(['published', 'withdrawn']);
 const TIMESTAMP_WITH_ZONE =
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
-function createDiagnostic(code, file, message) {
+function createDiagnostic(code: string, file: string, message: string): Diagnostic {
     return { code, file, message };
 }
 
-function normalizePath(filePath) {
+function normalizePath(filePath: string): string {
     return filePath.replaceAll('\\', '/').replace(/^\.\/+/, '');
 }
 
-function collisionKey(filePath) {
+function collisionKey(filePath: string): string {
     return normalizePath(filePath).normalize('NFC').toLowerCase();
 }
 
-function countOccurrences(content, needle) {
+function countOccurrences(content: string, needle: string): number {
     let count = 0;
     let offset = 0;
 
@@ -39,9 +109,12 @@ function countOccurrences(content, needle) {
     return count;
 }
 
-function analyzeArticleReferences(content, file = '(content)') {
-    const references = [];
-    const diagnostics = [];
+function analyzeArticleReferences(
+    content: string,
+    file = '(content)',
+): { references: ArticleReference[]; diagnostics: Diagnostic[] } {
+    const references: ArticleReference[] = [];
+    const diagnostics: Diagnostic[] = [];
     let offset = 0;
 
     while (offset < content.length) {
@@ -127,11 +200,11 @@ function analyzeArticleReferences(content, file = '(content)') {
     return { references, diagnostics };
 }
 
-function extractArticleReferences(content) {
+function extractArticleReferences(content: string): ArticleReference[] {
     return analyzeArticleReferences(content).references;
 }
 
-function isTimestampWithTimezone(value) {
+function isTimestampWithTimezone(value: unknown): value is string {
     return (
         typeof value === 'string' &&
         TIMESTAMP_WITH_ZONE.test(value) &&
@@ -139,7 +212,7 @@ function isTimestampWithTimezone(value) {
     );
 }
 
-function isTrimmedNfcString(value) {
+function isTrimmedNfcString(value: unknown): value is string {
     return (
         typeof value === 'string' &&
         value.length > 0 &&
@@ -148,8 +221,8 @@ function isTrimmedNfcString(value) {
     );
 }
 
-function validateBytes(buffer, file) {
-    const diagnostics = [];
+function validateBytes(buffer: Uint8Array, file: string): Diagnostic[] {
+    const diagnostics: Diagnostic[] = [];
 
     if (
         buffer.length >= 3 &&
@@ -206,8 +279,8 @@ function validateBytes(buffer, file) {
     return diagnostics;
 }
 
-function validateSeriesMarkers(content, file) {
-    const diagnostics = [];
+function validateSeriesMarkers(content: string, file: string): Diagnostic[] {
+    const diagnostics: Diagnostic[] = [];
     const startCount = countOccurrences(content, SERIES_START);
     const endCount = countOccurrences(content, SERIES_END);
 
@@ -249,7 +322,9 @@ function validateSeriesMarkers(content, file) {
     return diagnostics;
 }
 
-function decodeUtf8(bytes) {
+function decodeUtf8(
+    bytes: string | Uint8Array | null | undefined,
+): { buffer: Buffer; content: string } {
     const buffer =
         typeof bytes === 'string'
             ? Buffer.from(bytes, 'utf8')
@@ -258,13 +333,13 @@ function decodeUtf8(bytes) {
     return { buffer, content: decoder.decode(buffer) };
 }
 
-function parseArticle(input) {
+function parseArticle(input: ArticleInput): ParseArticleResult {
     const relativePath = normalizePath(input.relativePath || '');
     const pathParts = relativePath.split('/');
-    const source = pathParts[0];
-    const diagnostics = [];
+    const rawSource = pathParts[0];
+    const diagnostics: Diagnostic[] = [];
 
-    if (!SOURCE_KINDS.has(source) || pathParts.length < 2) {
+    if (!SOURCE_KINDS.has(rawSource as SourceKind) || pathParts.length < 2) {
         diagnostics.push(
             createDiagnostic(
                 'INVALID_SOURCE_PATH',
@@ -274,6 +349,7 @@ function parseArticle(input) {
         );
         return { article: null, diagnostics };
     }
+    const source = rawSource as SourceKind;
 
     const buffer =
         typeof input.bytes === 'string'
@@ -297,7 +373,7 @@ function parseArticle(input) {
         return { article: null, diagnostics };
     }
 
-    let decoded;
+    let decoded: { buffer: Buffer; content: string };
     try {
         decoded = decodeUtf8(buffer);
     } catch {
@@ -335,7 +411,7 @@ function parseArticle(input) {
         return { article: null, diagnostics };
     }
 
-    let parsed;
+    let parsed: ReturnType<typeof matter>;
     try {
         parsed = matter(content);
     } catch (error) {
@@ -343,13 +419,18 @@ function parseArticle(input) {
             createDiagnostic(
                 'INVALID_FRONT_MATTER',
                 relativePath,
-                `YAML front matterを解析できません: ${error.message}`,
+                `YAML front matterを解析できません: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
             ),
         );
         return { article: null, diagnostics };
     }
 
-    if (parsed.isEmpty || !/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(content)) {
+    if (
+        (parsed as typeof parsed & { isEmpty?: boolean }).isEmpty
+        || !/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(content)
+    ) {
         diagnostics.push(
             createDiagnostic(
                 'INVALID_FRONT_MATTER',
@@ -370,7 +451,7 @@ function parseArticle(input) {
         );
     }
 
-    const data = parsed.data || {};
+    const data = (parsed.data || {}) as UnknownRecord;
     const articleId =
         typeof data.article_id === 'string' ? data.article_id : null;
     const title =
@@ -472,7 +553,7 @@ function parseArticle(input) {
 
     if (
         data.type !== undefined &&
-        !['tech', 'idea'].includes(data.type)
+        (typeof data.type !== 'string' || !['tech', 'idea'].includes(data.type))
     ) {
         diagnostics.push(
             createDiagnostic(
@@ -543,8 +624,12 @@ function parseArticle(input) {
     };
 }
 
-function buildEffectiveArticles(articles, platform, diagnostics) {
-    const effective = new Map();
+function buildEffectiveArticles(
+    articles: ParsedArticle[],
+    platform: Platform,
+    diagnostics: Diagnostic[],
+): ParsedArticle[] {
+    const effective = new Map<string, ParsedArticle>();
 
     for (const article of articles.filter((item) => item.source === 'share')) {
         effective.set(collisionKey(article.sourceRelativePath), article);
@@ -570,8 +655,11 @@ function buildEffectiveArticles(articles, platform, diagnostics) {
     );
 }
 
-function validateFilenameCollisions(articles, diagnostics) {
-    const filesByKey = new Map();
+function validateFilenameCollisions(
+    articles: ParsedArticle[],
+    diagnostics: Diagnostic[],
+): void {
+    const filesByKey = new Map<string, ParsedArticle[]>();
 
     for (const article of articles) {
         const key = `${article.source}:${collisionKey(
@@ -597,7 +685,11 @@ function validateFilenameCollisions(articles, diagnostics) {
     }
 }
 
-function requireLocalUpdatedAt(article, diagnostics, seen) {
+function requireLocalUpdatedAt(
+    article: ParsedArticle,
+    diagnostics: Diagnostic[],
+    seen: Set<string>,
+): void {
     if (article.localUpdatedAt !== undefined) {
         return;
     }
@@ -616,9 +708,13 @@ function requireLocalUpdatedAt(article, diagnostics, seen) {
     );
 }
 
-function validatePlatformIdentity(platform, articles, diagnostics) {
-    const titleMap = new Map();
-    const articleIdMap = new Map();
+function validatePlatformIdentity(
+    platform: Platform,
+    articles: ParsedArticle[],
+    diagnostics: Diagnostic[],
+): void {
+    const titleMap = new Map<string, ParsedArticle[]>();
+    const articleIdMap = new Map<string, ParsedArticle[]>();
 
     for (const article of articles) {
         if (article.title) {
@@ -674,8 +770,11 @@ function validatePlatformIdentity(platform, articles, diagnostics) {
     }
 }
 
-function validateArticleIds(articles, diagnostics) {
-    const articlesById = new Map();
+function validateArticleIds(
+    articles: ParsedArticle[],
+    diagnostics: Diagnostic[],
+): void {
+    const articlesById = new Map<string, ParsedArticle[]>();
 
     for (const article of articles) {
         if (!article.articleId || !ARTICLE_ID_PATTERN.test(article.articleId)) {
@@ -701,12 +800,16 @@ function validateArticleIds(articles, diagnostics) {
     }
 }
 
-function escapeRegExp(value) {
+function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function validatePlatformSeries(platform, articles, diagnostics) {
-    const seriesMap = new Map();
+function validatePlatformSeries(
+    platform: Platform,
+    articles: ParsedArticle[],
+    diagnostics: Diagnostic[],
+): void {
+    const seriesMap = new Map<string, ParsedArticle[]>();
 
     for (const article of articles) {
         if (!article.series) {
@@ -722,8 +825,8 @@ function validatePlatformSeries(platform, articles, diagnostics) {
             `^${escapeRegExp(series)} #(\\d+)\\s+\\S[\\s\\S]*$`,
             'u',
         );
-        const numbered = [];
-        const unnumbered = [];
+        const numbered: Array<{ article: ParsedArticle; number: bigint }> = [];
+        const unnumbered: ParsedArticle[] = [];
 
         for (const article of matches) {
             const match = article.title && article.title.match(titlePattern);
@@ -756,7 +859,7 @@ function validatePlatformSeries(platform, articles, diagnostics) {
             );
         }
 
-        const byNumber = new Map();
+        const byNumber = new Map<bigint, ParsedArticle[]>();
         for (const item of numbered) {
             const sameNumber = byNumber.get(item.number) || [];
             sameNumber.push(item.article);
@@ -781,7 +884,7 @@ function validatePlatformSeries(platform, articles, diagnostics) {
             a < b ? -1 : a > b ? 1 : 0,
         );
         if (numbers.length > 1) {
-            const missing = [];
+            const missing: string[] = [];
             for (let index = 1; index < numbers.length; index += 1) {
                 const firstMissing = numbers[index - 1] + 1n;
                 const lastMissing = numbers[index] - 1n;
@@ -808,7 +911,7 @@ function validatePlatformSeries(platform, articles, diagnostics) {
     }
 }
 
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is UnknownRecord {
     return (
         value !== null &&
         typeof value === 'object' &&
@@ -816,7 +919,7 @@ function isPlainObject(value) {
     );
 }
 
-function expectedTargetsForSource(source) {
+function expectedTargetsForSource(source: SourceKind): Platform[] {
     if (source === 'share') {
         return ['qiita', 'zenn'];
     }
@@ -827,11 +930,11 @@ function expectedTargetsForSource(source) {
 }
 
 function validateManifest(
-    manifest,
-    articles,
-    diagnostics,
+    manifest: unknown,
+    articles: ParsedArticle[],
+    diagnostics: Diagnostic[],
     manifestFile = 'manifest.json',
-) {
+): void {
     if (!isPlainObject(manifest)) {
         diagnostics.push(
             createDiagnostic(
@@ -885,8 +988,8 @@ function validateManifest(
             article,
         ]),
     );
-    const manifestBySource = new Map();
-    const manifestById = new Map();
+    const manifestBySource = new Map<string, UnknownRecord>();
+    const manifestById = new Map<string, UnknownRecord>();
 
     for (const [index, entry] of manifest.articles.entries()) {
         const entryFile = `${manifestFile}#articles[${index}]`;
@@ -947,7 +1050,10 @@ function validateManifest(
             manifestById.set(articleId, entry);
         }
 
-        if (!ARTICLE_STATES.has(entry.article_state)) {
+        if (
+            typeof entry.article_state !== 'string'
+            || !ARTICLE_STATES.has(entry.article_state)
+        ) {
             diagnostics.push(
                 createDiagnostic(
                     'INVALID_ARTICLE_STATE',
@@ -966,7 +1072,7 @@ function validateManifest(
         }
 
         let normalizedSource = null;
-        let sourceKind = null;
+        let sourceKind: SourceKind | null = null;
         if (typeof entry.source === 'string') {
             normalizedSource = normalizePath(entry.source);
             const sourceMatch = normalizedSource.match(
@@ -985,7 +1091,7 @@ function validateManifest(
                     ),
                 );
             } else {
-                sourceKind = sourceMatch[1];
+                sourceKind = sourceMatch[1] as SourceKind;
                 if (manifestBySource.has(normalizedSource)) {
                     diagnostics.push(
                         createDiagnostic(
@@ -1023,7 +1129,9 @@ function validateManifest(
             const targetKeys = Object.keys(entry.targets).sort();
             if (
                 targetKeys.length === 0 ||
-                targetKeys.some((platform) => !PLATFORMS.includes(platform))
+                targetKeys.some(
+                    (platform) => !PLATFORMS.includes(platform as Platform),
+                )
             ) {
                 diagnostics.push(
                     createDiagnostic(
@@ -1040,7 +1148,8 @@ function validateManifest(
                     !isPlainObject(target) ||
                     Object.keys(target).length !== 1 ||
                     !Object.prototype.hasOwnProperty.call(target, 'desired') ||
-                    !TARGET_DESIRED_STATES.has(target.desired)
+                    typeof target.desired !== 'string'
+                    || !TARGET_DESIRED_STATES.has(target.desired)
                 ) {
                     diagnostics.push(
                         createDiagnostic(
@@ -1123,11 +1232,11 @@ function validateManifest(
 }
 
 function validateManifestHistory(
-    previousManifest,
-    currentManifest,
-    diagnostics,
+    previousManifest: unknown,
+    currentManifest: unknown,
+    diagnostics: Diagnostic[],
     previousFile = 'previous-manifest.json',
-) {
+): void {
     if (
         !isPlainObject(previousManifest) ||
         previousManifest.schema_version !== 1 ||
@@ -1150,8 +1259,8 @@ function validateManifestHistory(
         return;
     }
 
-    const currentById = new Map();
-    const currentBySource = new Map();
+    const currentById = new Map<string, UnknownRecord>();
+    const currentBySource = new Map<string, UnknownRecord>();
     for (const entry of currentManifest.articles) {
         if (!isPlainObject(entry)) {
             continue;
@@ -1167,16 +1276,16 @@ function validateManifestHistory(
         }
     }
 
-    const previousIds = new Set(
-        previousManifest.articles
-            .filter(
-                (entry) =>
-                    isPlainObject(entry) &&
-                    typeof entry.article_id === 'string' &&
-                    ARTICLE_ID_PATTERN.test(entry.article_id),
-            )
-            .map((entry) => entry.article_id),
-    );
+    const previousIds = new Set<string>();
+    for (const entry of previousManifest.articles) {
+        if (
+            isPlainObject(entry)
+            && typeof entry.article_id === 'string'
+            && ARTICLE_ID_PATTERN.test(entry.article_id)
+        ) {
+            previousIds.add(entry.article_id);
+        }
+    }
     for (const articleId of currentById.keys()) {
         if (!previousIds.has(articleId)) {
             diagnostics.push(
@@ -1233,7 +1342,7 @@ function validateManifestHistory(
         ) {
             for (const platform of Object.keys(previousEntry.targets)) {
                 if (
-                    PLATFORMS.includes(platform) &&
+                    PLATFORMS.includes(platform as Platform) &&
                     !Object.prototype.hasOwnProperty.call(
                         currentEntry.targets,
                         platform,
@@ -1252,17 +1361,20 @@ function validateManifestHistory(
     }
 }
 
-function validateArticleFiles(files, options = {}) {
+function validateArticleFiles(
+    files: Iterable<ArticleInput>,
+    options: ValidateArticleFilesOptions = {},
+): ValidationResult {
     const phase = options.phase || 'source';
     if (!['source', 'distribution'].includes(phase)) {
         throw new TypeError(`Unknown validation phase: ${phase}`);
     }
 
-    const diagnostics = [];
-    const articles = [];
+    const diagnostics: Diagnostic[] = [];
+    const articles: ParsedArticle[] = [];
     const sortedFiles = [...files].sort((a, b) =>
-        normalizePath(a.relativePath).localeCompare(
-            normalizePath(b.relativePath),
+        normalizePath(a.relativePath || '').localeCompare(
+            normalizePath(b.relativePath || ''),
         ),
     );
 
@@ -1315,7 +1427,10 @@ function validateArticleFiles(files, options = {}) {
         );
     }
 
-    const effective = {};
+    const effective: Record<Platform, ParsedArticle[]> = {
+        qiita: [],
+        zenn: [],
+    };
     for (const platform of PLATFORMS) {
         effective[platform] = buildEffectiveArticles(
             articles,
@@ -1326,7 +1441,7 @@ function validateArticleFiles(files, options = {}) {
         validatePlatformSeries(platform, effective[platform], diagnostics);
     }
 
-    const timestampDiagnostics = new Set();
+    const timestampDiagnostics = new Set<string>();
     for (const article of articles.filter((item) => item.source === 'qiita')) {
         requireLocalUpdatedAt(article, diagnostics, timestampDiagnostics);
     }
@@ -1356,8 +1471,11 @@ function validateArticleFiles(files, options = {}) {
     };
 }
 
-function collectMarkdownFiles(articlesRoot, diagnostics = []) {
-    const files = [];
+function collectMarkdownFiles(
+    articlesRoot: string,
+    diagnostics: Diagnostic[] = [],
+): ArticleInput[] {
+    const files: ArticleInput[] = [];
 
     for (const source of SOURCE_KINDS) {
         const directory = path.join(articlesRoot, source);
@@ -1365,7 +1483,10 @@ function collectMarkdownFiles(articlesRoot, diagnostics = []) {
         try {
             directoryStat = fs.lstatSync(directory);
         } catch (error) {
-            if (error.code === 'ENOENT') {
+            if (
+                error instanceof Error
+                && (error as NodeJS.ErrnoException).code === 'ENOENT'
+            ) {
                 if (source === 'share') {
                     diagnostics.push(
                         createDiagnostic(
@@ -1456,7 +1577,10 @@ function collectMarkdownFiles(articlesRoot, diagnostics = []) {
     return files;
 }
 
-function readManifestFile(articlesRoot, diagnostics) {
+function readManifestFile(
+    articlesRoot: string,
+    diagnostics: Diagnostic[],
+): unknown | null {
     const manifestPath = path.join(articlesRoot, 'manifest.json');
     const diagnosticPath = 'manifest.json';
     let manifestStat;
@@ -1464,7 +1588,10 @@ function readManifestFile(articlesRoot, diagnostics) {
     try {
         manifestStat = fs.lstatSync(manifestPath);
     } catch (error) {
-        if (error.code === 'ENOENT') {
+        if (
+            error instanceof Error
+            && (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ) {
             diagnostics.push(
                 createDiagnostic(
                     'MANIFEST_MISSING',
@@ -1527,21 +1654,29 @@ function readManifestFile(articlesRoot, diagnostics) {
             createDiagnostic(
                 'INVALID_MANIFEST_JSON',
                 diagnosticPath,
-                `manifest.jsonを解析できません: ${error.message}`,
+                `manifest.jsonを解析できません: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
             ),
         );
         return null;
     }
 }
 
-function readPreviousManifestFile(manifestPath, diagnostics) {
+function readPreviousManifestFile(
+    manifestPath: string,
+    diagnostics: Diagnostic[],
+): unknown | null {
     const diagnosticPath = normalizePath(manifestPath);
     let manifestStat;
 
     try {
         manifestStat = fs.lstatSync(manifestPath);
     } catch (error) {
-        if (error.code === 'ENOENT') {
+        if (
+            error instanceof Error
+            && (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ) {
             diagnostics.push(
                 createDiagnostic(
                     'PREVIOUS_MANIFEST_NOT_FOUND',
@@ -1602,14 +1737,19 @@ function readPreviousManifestFile(manifestPath, diagnostics) {
             createDiagnostic(
                 'INVALID_PREVIOUS_MANIFEST_JSON',
                 diagnosticPath,
-                `previous manifestを解析できません: ${error.message}`,
+                `previous manifestを解析できません: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
             ),
         );
         return null;
     }
 }
 
-function validateArticlesDirectory(articlesRoot, options = {}) {
+function validateArticlesDirectory(
+    articlesRoot: string,
+    options: ValidateArticlesDirectoryOptions = {},
+): ValidationResult {
     if (!fs.existsSync(articlesRoot)) {
         return {
             ok: false,
@@ -1653,10 +1793,10 @@ function validateArticlesDirectory(articlesRoot, options = {}) {
         };
     }
 
-    const structureDiagnostics = [];
+    const structureDiagnostics: Diagnostic[] = [];
     const files = collectMarkdownFiles(articlesRoot, structureDiagnostics);
     const manifest = readManifestFile(articlesRoot, structureDiagnostics);
-    const validationOptions = {
+    const validationOptions: ValidateArticleFilesOptions = {
         ...options,
         manifest,
         manifestFile: 'manifest.json',
@@ -1685,7 +1825,7 @@ function validateArticlesDirectory(articlesRoot, options = {}) {
     return result;
 }
 
-function formatResult(result) {
+function formatResult(result: ValidationResult): string {
     if (result.ok) {
         return [
             `Article validation passed (${result.phase}).`,
@@ -1701,7 +1841,13 @@ function formatResult(result) {
     ].join('\n');
 }
 
-function parseCliArgs(argv) {
+export interface ParsedCliArgs {
+    articlesRoot: string;
+    phase: ValidationPhase;
+    previousManifestPath: string | null;
+}
+
+function parseCliArgs(argv: string[]): ParsedCliArgs {
     let articlesRoot = 'articles';
     let phase = 'source';
     let previousManifestPath = null;
@@ -1731,10 +1877,17 @@ function parseCliArgs(argv) {
         throw new TypeError(`Unknown validation phase: ${phase}`);
     }
 
-    return { articlesRoot, phase, previousManifestPath };
+    return {
+        articlesRoot,
+        phase: phase as ValidationPhase,
+        previousManifestPath,
+    };
 }
 
-function runCli(argv = process.argv.slice(2), io = console) {
+function runCli(
+    argv: string[] = process.argv.slice(2),
+    io: ValidationIo = console,
+): number {
     try {
         const options = parseCliArgs(argv);
         const result = validateArticlesDirectory(
@@ -1754,9 +1907,33 @@ function runCli(argv = process.argv.slice(2), io = console) {
         io.error(output);
         return 1;
     } catch (error) {
-        io.error(`Article validation could not run: ${error.message}`);
+        io.error(
+            `Article validation could not run: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
+        );
         return 2;
     }
+}
+
+export interface ValidateArticlesExports {
+    ARTICLE_ID_PATTERN: RegExp;
+    SERIES_END: string;
+    SERIES_START: string;
+    collectMarkdownFiles: typeof collectMarkdownFiles;
+    extractArticleReferences: typeof extractArticleReferences;
+    formatResult: typeof formatResult;
+    isTimestampWithTimezone: typeof isTimestampWithTimezone;
+    parseArticle: typeof parseArticle;
+    parseCliArgs: typeof parseCliArgs;
+    readManifestFile: typeof readManifestFile;
+    readPreviousManifestFile: typeof readPreviousManifestFile;
+    runCli: typeof runCli;
+    validateArticleFiles: typeof validateArticleFiles;
+    validateArticlesDirectory: typeof validateArticlesDirectory;
+    validateManifest: typeof validateManifest;
+    validateManifestHistory: typeof validateManifestHistory;
+    validateSeriesMarkers: typeof validateSeriesMarkers;
 }
 
 module.exports = {
