@@ -10,6 +10,9 @@ import type {
 import type {
     ResolveManifestHistoryExports,
 } from '../scripts/resolve_manifest_history.ts';
+import type {
+    ArticleValidationArticleSetExports,
+} from '../scripts/article_validation/article_set.ts';
 
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto: typeof import('node:crypto') = require('node:crypto');
@@ -25,6 +28,10 @@ const articleApi =
         ValidateArticlesExports,
         'parseArticle'
     >;
+const articleSetApi =
+    require(
+        '../scripts/article_validation/article_set.ts'
+    ) as ArticleValidationArticleSetExports;
 const {
     parseCliArgs,
     runCli,
@@ -111,6 +118,64 @@ test('validate_articles keeps its CommonJS compatibility surface', () => {
         ),
         [],
     );
+});
+
+test('article_set keeps its internal surface and diagnoses ambiguous references', () => {
+    assert.deepEqual(Object.keys(articleSetApi).sort(), [
+        'buildEffectiveArticles',
+        'requireLocalUpdatedAt',
+        'validateArticleIds',
+        'validateFilenameCollisions',
+        'validatePlatformIdentity',
+        'validatePlatformSeries',
+    ]);
+
+    const duplicateArticleId = 'b'.repeat(32);
+    const parsedArticles = [
+        article(
+            'share/first.md',
+            markdown({
+                articleId: duplicateArticleId,
+                title: 'First',
+            }),
+        ),
+        article(
+            'share/second.md',
+            markdown({
+                articleId: duplicateArticleId,
+                title: 'Second',
+            }),
+        ),
+        article(
+            'share/reference.md',
+            markdown({
+                title: 'Series #0 Reference',
+                series: 'Series',
+                body: `<<<article:${duplicateArticleId}>>>`,
+            }),
+        ),
+    ].map((input) => {
+        const result = validatorApi.parseArticle(input);
+        assert.deepEqual(result.diagnostics, []);
+        assert.ok(result.article);
+        return result.article;
+    });
+    const diagnostics: Diagnostic[] = [];
+
+    articleSetApi.validatePlatformIdentity(
+        'qiita',
+        parsedArticles,
+        diagnostics,
+    );
+
+    assert.deepEqual(diagnostics, [
+        {
+            code: 'AMBIGUOUS_ARTICLE_REFERENCE',
+            file: 'share/reference.md',
+            message:
+                `qiitaのarticle_id「${duplicateArticleId}」を一意に決定できません。`,
+        },
+    ]);
 });
 
 function markdown({
