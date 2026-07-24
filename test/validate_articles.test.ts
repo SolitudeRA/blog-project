@@ -20,6 +20,11 @@ const test: typeof import('node:test') = require('node:test');
 
 const validatorApi =
     require('../scripts/validate_articles.ts') as ValidateArticlesExports;
+const articleApi =
+    require('../scripts/article_validation/article.ts') as Pick<
+        ValidateArticlesExports,
+        'parseArticle'
+    >;
 const {
     parseCliArgs,
     runCli,
@@ -63,6 +68,7 @@ interface TestManifest {
 }
 
 test('validate_articles keeps its CommonJS compatibility surface', () => {
+    assert.equal(validatorApi.parseArticle, articleApi.parseArticle);
     assert.deepEqual(Object.keys(validatorApi).sort(), [
         'ARTICLE_ID_PATTERN',
         'SERIES_END',
