@@ -19,6 +19,12 @@ import type {
 import type {
     ArticleValidationValidationExports,
 } from '../scripts/article_validation/validation.ts';
+import type {
+    ArticleValidationArticleFilesExports,
+} from '../scripts/article_validation/article_files.ts';
+import type {
+    ArticleValidationManifestIoExports,
+} from '../scripts/article_validation/manifest_io.ts';
 
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto: typeof import('node:crypto') = require('node:crypto');
@@ -46,6 +52,14 @@ const validationApi =
     require(
         '../scripts/article_validation/validation.ts'
     ) as ArticleValidationValidationExports;
+const articleFilesApi =
+    require(
+        '../scripts/article_validation/article_files.ts'
+    ) as ArticleValidationArticleFilesExports;
+const manifestIoApi =
+    require(
+        '../scripts/article_validation/manifest_io.ts'
+    ) as ArticleValidationManifestIoExports;
 const {
     parseCliArgs,
     runCli,
@@ -104,6 +118,20 @@ test('validate_articles keeps its CommonJS compatibility surface', () => {
         validationApi.validateArticleFiles,
     );
     assert.deepEqual(Object.keys(validationApi), ['validateArticleFiles']);
+    assert.equal(
+        validatorApi.collectMarkdownFiles,
+        articleFilesApi.collectMarkdownFiles,
+    );
+    assert.deepEqual(Object.keys(articleFilesApi), ['collectMarkdownFiles']);
+    assert.equal(validatorApi.readManifestFile, manifestIoApi.readManifestFile);
+    assert.equal(
+        validatorApi.readPreviousManifestFile,
+        manifestIoApi.readPreviousManifestFile,
+    );
+    assert.deepEqual(Object.keys(manifestIoApi).sort(), [
+        'readManifestFile',
+        'readPreviousManifestFile',
+    ]);
     assert.deepEqual(Object.keys(validatorApi).sort(), [
         'ARTICLE_ID_PATTERN',
         'SERIES_END',
@@ -878,6 +906,190 @@ test('directory validation requires a parseable articles/manifest.json', () => {
         );
         const invalid = validateArticlesDirectory(temporaryRoot);
         assert.ok(codes(invalid).includes('INVALID_MANIFEST_JSON'));
+    } finally {
+        fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+});
+
+test('readPreviousManifestFile parses valid JSON', () => {
+    const temporaryRoot = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'blog-previous-manifest-valid-'),
+    );
+    const previousManifestPath = path.join(
+        temporaryRoot,
+        'previous-manifest.json',
+    );
+    const expected = manifest([manifestEntry('share/a.md')]);
+
+    try {
+        fs.writeFileSync(
+            previousManifestPath,
+            `${JSON.stringify(expected, null, 2)}\n`,
+            'utf8',
+        );
+        const diagnostics: Diagnostic[] = [];
+
+        assert.deepEqual(
+            manifestIoApi.readPreviousManifestFile(
+                previousManifestPath,
+                diagnostics,
+            ),
+            expected,
+        );
+        assert.deepEqual(diagnostics, []);
+    } finally {
+        fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+});
+
+test('readPreviousManifestFile reports stable file and content diagnostics', () => {
+    const temporaryRoot = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'blog-previous-manifest-invalid-'),
+    );
+    const missingPath = path.join(temporaryRoot, 'missing.json');
+    const directoryPath = path.join(temporaryRoot, 'directory.json');
+    const emptyPath = path.join(temporaryRoot, 'empty.json');
+    const bomPath = path.join(temporaryRoot, 'bom.json');
+    const invalidUtf8Path = path.join(temporaryRoot, 'invalid-utf8.json');
+    const invalidJsonPath = path.join(temporaryRoot, 'invalid-json.json');
+    const cases: Array<{
+        name: string;
+        manifestPath: string;
+        prepare: () => void;
+        code: string;
+        message: string;
+        prefixOnly?: boolean;
+    }> = [
+        {
+            name: 'missing',
+            manifestPath: missingPath,
+            prepare: () => {},
+            code: 'PREVIOUS_MANIFEST_NOT_FOUND',
+            message: '指定されたprevious manifestが見つかりません。',
+        },
+        {
+            name: 'non-file',
+            manifestPath: directoryPath,
+            prepare: () => fs.mkdirSync(directoryPath),
+            code: 'INVALID_PREVIOUS_MANIFEST_FILE',
+            message: 'previous manifestは通常ファイルである必要があります。',
+        },
+        {
+            name: 'empty',
+            manifestPath: emptyPath,
+            prepare: () => fs.writeFileSync(emptyPath, Buffer.alloc(0)),
+            code: 'INVALID_PREVIOUS_MANIFEST',
+            message: 'previous manifestが空です。',
+        },
+        {
+            name: 'BOM',
+            manifestPath: bomPath,
+            prepare: () =>
+                fs.writeFileSync(
+                    bomPath,
+                    Buffer.concat([
+                        Buffer.from([0xef, 0xbb, 0xbf]),
+                        Buffer.from('{}', 'utf8'),
+                    ]),
+                ),
+            code: 'UTF8_BOM',
+            message: 'UTF-8 BOMは許可されていません。',
+        },
+        {
+            name: 'invalid UTF-8',
+            manifestPath: invalidUtf8Path,
+            prepare: () =>
+                fs.writeFileSync(
+                    invalidUtf8Path,
+                    Buffer.from([0xc3, 0x28]),
+                ),
+            code: 'INVALID_UTF8',
+            message: 'previous manifestを厳密なUTF-8として読み取れません。',
+        },
+        {
+            name: 'invalid JSON',
+            manifestPath: invalidJsonPath,
+            prepare: () =>
+                fs.writeFileSync(invalidJsonPath, '{ invalid json', 'utf8'),
+            code: 'INVALID_PREVIOUS_MANIFEST_JSON',
+            message: 'previous manifestを解析できません: ',
+            prefixOnly: true,
+        },
+    ];
+
+    try {
+        for (const fixture of cases) {
+            fixture.prepare();
+            const diagnostics: Diagnostic[] = [];
+            const result = manifestIoApi.readPreviousManifestFile(
+                fixture.manifestPath,
+                diagnostics,
+            );
+
+            assert.equal(result, null, fixture.name);
+            assert.equal(diagnostics.length, 1, fixture.name);
+            assert.equal(diagnostics[0].code, fixture.code, fixture.name);
+            assert.equal(
+                diagnostics[0].file,
+                fixture.manifestPath.replaceAll('\\', '/'),
+                fixture.name,
+            );
+            if (fixture.prefixOnly) {
+                assert.ok(
+                    diagnostics[0].message.startsWith(fixture.message),
+                    fixture.name,
+                );
+            } else {
+                assert.equal(
+                    diagnostics[0].message,
+                    fixture.message,
+                    fixture.name,
+                );
+            }
+        }
+    } finally {
+        fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+});
+
+test('readPreviousManifestFile rejects symbolic links when the platform permits creating one', (t) => {
+    const temporaryRoot = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'blog-previous-manifest-link-'),
+    );
+    const targetPath = path.join(temporaryRoot, 'target.json');
+    const linkPath = path.join(temporaryRoot, 'previous-manifest.json');
+    fs.writeFileSync(
+        targetPath,
+        `${JSON.stringify(manifest([]), null, 2)}\n`,
+        'utf8',
+    );
+
+    try {
+        try {
+            fs.symlinkSync(targetPath, linkPath, 'file');
+        } catch (error) {
+            const errorCode = error instanceof Error
+                ? (error as NodeJS.ErrnoException).code
+                : undefined;
+            if (errorCode && ['EPERM', 'EACCES', 'ENOTSUP'].includes(errorCode)) {
+                t.skip(`symlink creation is unavailable: ${errorCode}`);
+                return;
+            }
+            throw error;
+        }
+
+        const diagnostics: Diagnostic[] = [];
+        assert.equal(
+            manifestIoApi.readPreviousManifestFile(linkPath, diagnostics),
+            null,
+        );
+        assert.deepEqual(diagnostics, [
+            {
+                code: 'INVALID_PREVIOUS_MANIFEST_FILE',
+                file: linkPath.replaceAll('\\', '/'),
+                message: 'previous manifestは通常ファイルである必要があります。',
+            },
+        ]);
     } finally {
         fs.rmSync(temporaryRoot, { recursive: true, force: true });
     }
