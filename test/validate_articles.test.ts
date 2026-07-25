@@ -2,15 +2,28 @@
 
 import type {
     ArticleInput,
+    ArticleReference,
     Diagnostic,
+    ParsedArticle,
     ParsedCliArgs,
+    ParseArticleResult,
+    Platform,
+    SourceKind,
     UnknownRecord,
+    ValidateArticleFilesOptions,
+    ValidateArticlesDirectoryOptions,
     ValidateArticlesExports,
+    ValidationCounts,
+    ValidationIo,
+    ValidationPhase,
     ValidationResult,
 } from '../scripts/validate_articles.ts';
 import type {
     ResolveManifestHistoryExports,
 } from '../scripts/resolve_manifest_history.ts';
+import type {
+    ArticleValidationSyntaxExports,
+} from '../scripts/article_validation/article_syntax.ts';
 import type {
     ArticleValidationArticleSetExports,
 } from '../scripts/article_validation/article_set.ts';
@@ -33,6 +46,25 @@ import type {
     ArticleValidationCliExports,
 } from '../scripts/article_validation/cli.ts';
 
+type PublicValidationTypeContract = [
+    ArticleInput,
+    ArticleReference,
+    Diagnostic,
+    ParsedArticle,
+    ParsedCliArgs,
+    ParseArticleResult,
+    Platform,
+    SourceKind,
+    UnknownRecord,
+    ValidateArticleFilesOptions,
+    ValidateArticlesDirectoryOptions,
+    ValidateArticlesExports,
+    ValidationCounts,
+    ValidationIo,
+    ValidationPhase,
+    ValidationResult,
+];
+
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const childProcess: typeof import('node:child_process') =
     require('node:child_process');
@@ -44,6 +76,10 @@ const test: typeof import('node:test') = require('node:test');
 
 const validatorApi =
     require('../scripts/validate_articles.ts') as ValidateArticlesExports;
+const syntaxApi =
+    require(
+        '../scripts/article_validation/article_syntax.ts'
+    ) as ArticleValidationSyntaxExports;
 const articleApi =
     require('../scripts/article_validation/article.ts') as Pick<
         ValidateArticlesExports,
@@ -121,6 +157,27 @@ interface TestManifest {
 }
 
 test('validate_articles keeps its CommonJS compatibility surface', () => {
+    assert.deepEqual(Object.keys(syntaxApi).sort(), [
+        'analyzeArticleReferences',
+        'decodeUtf8',
+        'extractArticleReferences',
+        'isTimestampWithTimezone',
+        'isTrimmedNfcString',
+        'validateBytes',
+        'validateSeriesMarkers',
+    ]);
+    assert.equal(
+        validatorApi.extractArticleReferences,
+        syntaxApi.extractArticleReferences,
+    );
+    assert.equal(
+        validatorApi.isTimestampWithTimezone,
+        syntaxApi.isTimestampWithTimezone,
+    );
+    assert.equal(
+        validatorApi.validateSeriesMarkers,
+        syntaxApi.validateSeriesMarkers,
+    );
     assert.equal(validatorApi.parseArticle, articleApi.parseArticle);
     assert.equal(validatorApi.validateManifest, manifestApi.validateManifest);
     assert.equal(
@@ -205,6 +262,61 @@ test('validate_articles keeps its CommonJS compatibility surface', () => {
         ),
         [],
     );
+});
+
+test('validate_articles remains a thin executable facade', () => {
+    const scriptsRoot = path.resolve(__dirname, '../scripts');
+    const facadePath = path.join(scriptsRoot, 'validate_articles.ts');
+    const articleValidationRoot = path.join(
+        scriptsRoot,
+        'article_validation',
+    );
+    const facadeSource = fs.readFileSync(facadePath, 'utf8');
+
+    assert.doesNotMatch(
+        facadeSource,
+        /^\s*(?:export\s+)?(?:async\s+)?function\b/mu,
+    );
+    assert.doesNotMatch(
+        facadeSource,
+        /^\s*(?:export\s+)?class\b/mu,
+    );
+    assert.doesNotMatch(facadeSource, /=>/u);
+    assert.doesNotMatch(
+        facadeSource,
+        /node:(?:fs|path)|\b(?:createDiagnostic|normalizePath)\b/u,
+    );
+
+    const moduleSources = fs
+        .readdirSync(articleValidationRoot, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((entry) => ({
+            relativePath: `scripts/article_validation/${entry.name}`,
+            source: fs.readFileSync(
+                path.join(articleValidationRoot, entry.name),
+                'utf8',
+            ),
+        }));
+
+    for (const { relativePath, source } of moduleSources) {
+        assert.doesNotMatch(
+            source,
+            /(?:require\(\s*|from\s+)['"]\.\.\/validate_articles(?:\.ts)?['"]/u,
+            relativePath,
+        );
+    }
+
+    const requireMainOwners = [
+        {
+            relativePath: 'scripts/validate_articles.ts',
+            source: facadeSource,
+        },
+        ...moduleSources,
+    ].flatMap(({ relativePath, source }) =>
+        [...source.matchAll(/require\.main/gu)].map(() => relativePath),
+    );
+    assert.deepEqual(requireMainOwners, ['scripts/validate_articles.ts']);
 });
 
 test('article_set keeps its internal surface and diagnoses ambiguous references', () => {
