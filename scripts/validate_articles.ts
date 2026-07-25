@@ -1,9 +1,6 @@
 'use strict';
 
 import type {
-    Diagnostic,
-    ValidateArticleFilesOptions,
-    ValidateArticlesDirectoryOptions,
     ValidationIo,
     ValidationPhase,
     ValidationResult,
@@ -11,9 +8,6 @@ import type {
 import type {
     ArticleValidationConstantsExports,
 } from './article_validation/constants.ts';
-import type {
-    ArticleValidationDiagnosticsExports,
-} from './article_validation/diagnostics.ts';
 import type {
     ArticleValidationSyntaxExports,
 } from './article_validation/article_syntax.ts';
@@ -33,8 +27,8 @@ import type {
     ArticleValidationManifestIoExports,
 } from './article_validation/manifest_io.ts';
 import type {
-    ArticleValidationNormalizationExports,
-} from './article_validation/normalization.ts';
+    ArticleValidationDirectoryExports,
+} from './article_validation/directory.ts';
 
 export type {
     ArticleInput,
@@ -53,7 +47,6 @@ export type {
     ValidationResult,
 } from './article_validation/types.ts';
 
-const fs: typeof import('node:fs') = require('node:fs');
 const path: typeof import('node:path') = require('node:path');
 const {
     ARTICLE_ID_PATTERN,
@@ -63,22 +56,12 @@ const {
     './article_validation/constants.ts'
 ) as ArticleValidationConstantsExports;
 const {
-    createDiagnostic,
-} = require(
-    './article_validation/diagnostics.ts'
-) as ArticleValidationDiagnosticsExports;
-const {
     extractArticleReferences,
     isTimestampWithTimezone,
     validateSeriesMarkers,
 } = require(
     './article_validation/article_syntax.ts'
 ) as ArticleValidationSyntaxExports;
-const {
-    normalizePath,
-} = require(
-    './article_validation/normalization.ts'
-) as ArticleValidationNormalizationExports;
 const {
     parseArticle,
 } = require(
@@ -106,86 +89,12 @@ const {
 } = require(
     './article_validation/manifest_io.ts'
 ) as ArticleValidationManifestIoExports;
+const {
+    validateArticlesDirectory,
+} = require(
+    './article_validation/directory.ts'
+) as ArticleValidationDirectoryExports;
 
-
-function validateArticlesDirectory(
-    articlesRoot: string,
-    options: ValidateArticlesDirectoryOptions = {},
-): ValidationResult {
-    if (!fs.existsSync(articlesRoot)) {
-        return {
-            ok: false,
-            phase: options.phase || 'source',
-            diagnostics: [
-                createDiagnostic(
-                    'ARTICLES_ROOT_NOT_FOUND',
-                    normalizePath(articlesRoot),
-                    '記事ルートディレクトリが見つかりません。',
-                ),
-            ],
-            counts: {
-                sourceFiles: 0,
-                parsedArticles: 0,
-                qiitaArticles: 0,
-                zennArticles: 0,
-            },
-        };
-    }
-
-    const rootStat = fs.lstatSync(articlesRoot);
-    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
-        return {
-            ok: false,
-            phase: options.phase || 'source',
-            diagnostics: [
-                createDiagnostic(
-                    rootStat.isSymbolicLink()
-                        ? 'SYMLINK_NOT_ALLOWED'
-                        : 'ARTICLES_ROOT_NOT_FOUND',
-                    normalizePath(articlesRoot),
-                    '記事ルートは通常のディレクトリである必要があります。',
-                ),
-            ],
-            counts: {
-                sourceFiles: 0,
-                parsedArticles: 0,
-                qiitaArticles: 0,
-                zennArticles: 0,
-            },
-        };
-    }
-
-    const structureDiagnostics: Diagnostic[] = [];
-    const files = collectMarkdownFiles(articlesRoot, structureDiagnostics);
-    const manifest = readManifestFile(articlesRoot, structureDiagnostics);
-    const validationOptions: ValidateArticleFilesOptions = {
-        ...options,
-        manifest,
-        manifestFile: 'manifest.json',
-    };
-    if (options.previousManifestPath) {
-        const previousManifest = readPreviousManifestFile(
-            options.previousManifestPath,
-            structureDiagnostics,
-        );
-        if (previousManifest !== null) {
-            validationOptions.previousManifest = previousManifest;
-            validationOptions.previousManifestFile = normalizePath(
-                options.previousManifestPath,
-            );
-        }
-    }
-    const result = validateArticleFiles(files, validationOptions);
-    result.diagnostics.push(...structureDiagnostics);
-    result.diagnostics.sort(
-        (a, b) =>
-            a.file.localeCompare(b.file) ||
-            a.code.localeCompare(b.code) ||
-            a.message.localeCompare(b.message),
-    );
-    result.ok = result.diagnostics.length === 0;
-    return result;
-}
 
 function formatResult(result: ValidationResult): string {
     if (result.ok) {
