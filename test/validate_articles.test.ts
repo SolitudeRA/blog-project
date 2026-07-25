@@ -3,6 +3,7 @@
 import type {
     ArticleInput,
     Diagnostic,
+    ParsedCliArgs,
     UnknownRecord,
     ValidateArticlesExports,
     ValidationResult,
@@ -28,8 +29,13 @@ import type {
 import type {
     ArticleValidationDirectoryExports,
 } from '../scripts/article_validation/directory.ts';
+import type {
+    ArticleValidationCliExports,
+} from '../scripts/article_validation/cli.ts';
 
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const childProcess: typeof import('node:child_process') =
+    require('node:child_process');
 const crypto: typeof import('node:crypto') = require('node:crypto');
 const fs: typeof import('node:fs') = require('node:fs');
 const os: typeof import('node:os') = require('node:os');
@@ -67,7 +73,12 @@ const directoryApi =
     require(
         '../scripts/article_validation/directory.ts'
     ) as ArticleValidationDirectoryExports;
+const cliApi =
+    require(
+        '../scripts/article_validation/cli.ts'
+    ) as ArticleValidationCliExports;
 const {
+    formatResult,
     parseCliArgs,
     runCli,
     validateArticleFiles,
@@ -144,6 +155,14 @@ test('validate_articles keeps its CommonJS compatibility surface', () => {
         directoryApi.validateArticlesDirectory,
     );
     assert.deepEqual(Object.keys(directoryApi), ['validateArticlesDirectory']);
+    assert.equal(validatorApi.formatResult, cliApi.formatResult);
+    assert.equal(validatorApi.parseCliArgs, cliApi.parseCliArgs);
+    assert.equal(validatorApi.runCli, cliApi.runCli);
+    assert.deepEqual(Object.keys(cliApi).sort(), [
+        'formatResult',
+        'parseCliArgs',
+        'runCli',
+    ]);
     assert.deepEqual(Object.keys(validatorApi).sort(), [
         'ARTICLE_ID_PATTERN',
         'SERIES_END',
@@ -531,6 +550,165 @@ test('rejects mismatched or repeated generated-series markers', () => {
     ]);
     assert.ok(codes(mismatch).includes('SERIES_MARKER_MISMATCH'));
     assert.ok(codes(repeated).includes('SERIES_MARKER_MULTIPLE'));
+});
+
+test('formatResult keeps its success and failure output contract', () => {
+    const success: ValidationResult = {
+        ok: true,
+        phase: 'source',
+        diagnostics: [],
+        counts: {
+            sourceFiles: 2,
+            parsedArticles: 2,
+            qiitaArticles: 2,
+            zennArticles: 1,
+        },
+    };
+    assert.equal(
+        formatResult(success),
+        'Article validation passed (source). source=2, qiita=2, zenn=1',
+    );
+
+    const failure: ValidationResult = {
+        ok: false,
+        phase: 'distribution',
+        diagnostics: [
+            {
+                code: 'FIRST_ERROR',
+                file: 'share/a.md',
+                message: 'first message',
+            },
+            {
+                code: 'SECOND_ERROR',
+                file: 'zenn/b.md',
+                message: 'second message',
+            },
+        ],
+        counts: {
+            sourceFiles: 2,
+            parsedArticles: 1,
+            qiitaArticles: 1,
+            zennArticles: 1,
+        },
+    };
+    assert.equal(
+        formatResult(failure),
+        [
+            'Article validation failed (distribution): 2 error(s).',
+            '- [FIRST_ERROR] share/a.md: first message',
+            '- [SECOND_ERROR] zenn/b.md: second message',
+        ].join('\n'),
+    );
+});
+
+test('parseCliArgs keeps its supported argument contract', () => {
+    const successCases: Array<{
+        argv: string[];
+        expected: ParsedCliArgs;
+    }> = [
+        {
+            argv: [],
+            expected: {
+                articlesRoot: 'articles',
+                phase: 'source',
+                previousManifestPath: null,
+            },
+        },
+        {
+            argv: ['custom-articles'],
+            expected: {
+                articlesRoot: 'custom-articles',
+                phase: 'source',
+                previousManifestPath: null,
+            },
+        },
+        {
+            argv: ['--phase=distribution'],
+            expected: {
+                articlesRoot: 'articles',
+                phase: 'distribution',
+                previousManifestPath: null,
+            },
+        },
+        {
+            argv: ['--previous-manifest=previous.json'],
+            expected: {
+                articlesRoot: 'articles',
+                phase: 'source',
+                previousManifestPath: 'previous.json',
+            },
+        },
+        {
+            argv: [
+                '--phase=distribution',
+                'custom-articles',
+                '--previous-manifest=previous.json',
+            ],
+            expected: {
+                articlesRoot: 'custom-articles',
+                phase: 'distribution',
+                previousManifestPath: 'previous.json',
+            },
+        },
+    ];
+
+    for (const { argv, expected } of successCases) {
+        assert.deepEqual(parseCliArgs(argv), expected);
+    }
+
+    const errorCases = [
+        {
+            argv: ['--phase=unsupported'],
+            message: 'Unknown validation phase: unsupported',
+        },
+        {
+            argv: ['--previous-manifest='],
+            message: '--previous-manifest requires a path',
+        },
+        {
+            argv: ['articles', 'extra'],
+            message: 'Unknown argument: extra',
+        },
+    ];
+
+    for (const { argv, message } of errorCases) {
+        assert.throws(
+            () => parseCliArgs(argv),
+            (error: unknown) => {
+                assert.ok(error instanceof TypeError);
+                assert.equal(error.message, message);
+                return true;
+            },
+        );
+    }
+});
+
+test('cli module has no executable side effects', (t) => {
+    const cliPath = path.resolve(
+        __dirname,
+        '../scripts/article_validation/cli.ts',
+    );
+    assert.doesNotMatch(
+        fs.readFileSync(cliPath, 'utf8'),
+        /require\.main/,
+    );
+
+    const probe = childProcess.spawnSync(process.execPath, [cliPath], {
+        encoding: 'utf8',
+    });
+    if (
+        (probe.error as NodeJS.ErrnoException | undefined)?.code ===
+        'EPERM'
+    ) {
+        t.skip('child process creation is unavailable: EPERM');
+        return;
+    }
+
+    assert.equal(probe.error, undefined);
+    assert.equal(probe.status, 0);
+    assert.equal(probe.signal, null);
+    assert.equal(probe.stdout, '');
+    assert.equal(probe.stderr, '');
 });
 
 test('CLI parses phase options and returns zero for a valid directory', () => {
