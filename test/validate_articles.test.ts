@@ -16,6 +16,9 @@ import type {
 import type {
     ArticleValidationManifestExports,
 } from '../scripts/article_validation/manifest.ts';
+import type {
+    ArticleValidationValidationExports,
+} from '../scripts/article_validation/validation.ts';
 
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto: typeof import('node:crypto') = require('node:crypto');
@@ -39,6 +42,10 @@ const manifestApi =
     require(
         '../scripts/article_validation/manifest.ts'
     ) as ArticleValidationManifestExports;
+const validationApi =
+    require(
+        '../scripts/article_validation/validation.ts'
+    ) as ArticleValidationValidationExports;
 const {
     parseCliArgs,
     runCli,
@@ -92,6 +99,11 @@ test('validate_articles keeps its CommonJS compatibility surface', () => {
         'validateManifest',
         'validateManifestHistory',
     ]);
+    assert.equal(
+        validatorApi.validateArticleFiles,
+        validationApi.validateArticleFiles,
+    );
+    assert.deepEqual(Object.keys(validationApi), ['validateArticleFiles']);
     assert.deepEqual(Object.keys(validatorApi).sort(), [
         'ARTICLE_ID_PATTERN',
         'SERIES_END',
